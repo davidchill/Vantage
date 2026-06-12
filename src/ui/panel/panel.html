@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="../shared/summary.css" />
+    <title>Vantage</title>
+  </head>
+  <body>
+    <header class="bar">
+      <div class="brand">
+        <span class="logo">◇</span>
+        <span class="bname">VANTAGE</span>
+        <span class="bver" id="version"></span>
+      </div>
+      <div class="bar-right">
+        <span class="status"><span class="live-dot"></span>LIVE</span>
+        <button id="refresh" class="iconbtn" title="Re-scan now">⟳</button>
+      </div>
+    </header>
+
+    <!-- Deep-profile output lives outside #content so the 5s live re-render
+         doesn't wipe it while the user is reading it. -->
+    <div id="deep-result" class="deep-result" hidden></div>
+
+    <main id="content">
+      <p class="loading">// initializing telemetry…</p>
+    </main>
+
+    <footer class="foot">
+      <span id="scanned-at"></span>
+      <span class="foot-tag">chrome://telemetry</span>
+    </footer>
+
+    <script type="module" src="panel.js"></script>
+  </body>
+</html>

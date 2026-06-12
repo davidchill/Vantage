@@ -1,0 +1,8 @@
+node_modules/
+.DS_Store
+Thumbs.db
+
+# AI-agent context files — keep local, don't ship to the repo
+.claude/
+CLAUDE.md
+AGENTS.md

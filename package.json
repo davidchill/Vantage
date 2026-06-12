@@ -1,0 +1,7 @@
+{
+  "name": "vantage",
+  "version": "0.1.0",
+  "description": "A live performance console for Chrome — monitor tabs, extensions, memory and page health, and diagnose what's slowing your browser down.",
+  "private": true,
+  "type": "module"
+}
