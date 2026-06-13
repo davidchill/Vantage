@@ -1,6 +1,6 @@
 // Shared configuration for the monitoring core.
 // manifest.json is the canonical version for Chrome; keep VERSION in sync with it.
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 
 // A tab not accessed in this many minutes is flagged as "idle".
 export const IDLE_MINUTES = 60;
@@ -54,3 +54,52 @@ export const HEAP_SERIES_MIN_GAP_MS = 25000; // downsample cadence (~25s)
 export const LCP_POOR_MS = 4000; // slow to load
 export const INP_POOR_MS = 500; // laggy interactions
 export const CLS_POOR = 0.25; // visual instability
+
+// --- Chronic strain ledger (persistent "repeat offenders" over time) ---
+// perfHistory answers "how heavy is this origin on average?". This answers the
+// orthogonal question "how OFTEN, and how persistently, does it cross into
+// strain?" — the time dimension behind "continuously causing strain". One record
+// per origin in storage.local, so it survives restarts (see strain-history.js).
+export const STRAIN_HISTORY_KEY = "strainHistory"; // storage.local: { [origin]: record }
+export const STRAIN_HISTORY_MAX_ORIGINS = 250; // LRU cap, mirrors perf history
+
+// Two strained scans count as "consecutive" (one streak) if seen within this
+// gap. A generous multiple of the scan cadence so a single missed/bursted scan
+// doesn't falsely break a streak.
+export const STRAIN_STREAK_GAP_MS = SCAN_INTERVAL_MINUTES * 60 * 1000 * 3;
+
+// An origin is "chronic" once flagged strained in at least this many scans...
+export const CHRONIC_MIN_EPISODES = 5;
+// ...and still strained within this window (keeps the list about CURRENT pain,
+// not something that misbehaved once last month).
+export const CHRONIC_RECENT_DAYS = 7;
+// Forget origins not strained in this long, so the ledger reflects recent life.
+export const CHRONIC_FORGET_DAYS = 30;
+
+// --- Auto-management (rule-based sleep/close) ---
+// Settings live in storage.local (survive restarts); the strain tracker lives in
+// storage.session (a within-session concept that should reset each browser run).
+export const SETTINGS_KEY = "settings"; // storage.local: user config
+export const STRAIN_TRACKER_KEY = "strainTracker"; // storage.session: tabId:kind -> since
+export const ACTION_LOG_KEY = "actionLog"; // storage.local: audit trail of auto-actions
+export const ACTION_LOG_MAX = 100; // newest-first; older entries evicted past this
+
+// How long a tab must stay continuously strained before automation acts on it.
+// At the 1-minute scan cadence this is roughly "must be bad for N scans in a row".
+export const DEFAULT_SUSTAIN_MINUTES = 5;
+
+// --- AI analysis (optional; bring-your-own Anthropic API key) ---
+// On demand, we send the analyzed summary to Claude and render its read on what's
+// straining the browser plus concrete suggestions. Off until the user adds a key.
+export const AI_API_URL = "https://api.anthropic.com/v1/messages";
+export const AI_API_VERSION = "2023-06-01"; // anthropic-version header
+export const AI_DEFAULT_MODEL = "claude-opus-4-8";
+// Models offered in the settings dropdown (id must be a valid Anthropic model).
+export const AI_MODELS = [
+  { id: "claude-opus-4-8", label: "Opus 4.8 — most capable" },
+  { id: "claude-sonnet-4-6", label: "Sonnet 4.6 — balanced" },
+  { id: "claude-haiku-4-5", label: "Haiku 4.5 — fast & cheap" },
+];
+// Output cap. The structured reply (headline + a handful of suggestions) is small;
+// this stays well under the non-streaming timeout ceiling.
+export const AI_MAX_TOKENS = 2000;

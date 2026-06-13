@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Vantage",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A live performance console for Chrome — monitor tabs, extensions, memory and page health, and diagnose what's slowing your browser down.",
   "minimum_chrome_version": "121",
   "permissions": [
@@ -13,8 +13,10 @@
     "alarms",
     "sidePanel",
     "management",
-    "debugger"
+    "debugger",
+    "cookies"
   ],
+  "host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "src/background/service-worker.js",
     "type": "module"

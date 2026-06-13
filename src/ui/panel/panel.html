@@ -15,13 +15,26 @@
       </div>
       <div class="bar-right">
         <span class="status"><span class="live-dot"></span>LIVE</span>
+        <button id="settings-btn" class="iconbtn" title="Auto-manage settings">⚙</button>
         <button id="refresh" class="iconbtn" title="Re-scan now">⟳</button>
       </div>
     </header>
 
+    <!-- Auto-manage status strip. Lives outside #content so the 5s live
+         re-render doesn't wipe it. Renders from settings, click toggles on/off. -->
+    <div id="auto-strip" class="auto-strip" hidden></div>
+
+    <!-- Current-tab inspector (ads / trackers / cookies for the active tab).
+         Also outside #content so it survives the live re-render. -->
+    <div id="current-tab" class="ct-card" hidden></div>
+
     <!-- Deep-profile output lives outside #content so the 5s live re-render
          doesn't wipe it while the user is reading it. -->
     <div id="deep-result" class="deep-result" hidden></div>
+
+    <!-- AI analysis card: a button + Claude's read of the current state. Outside
+         #content so the live re-render doesn't erase the result mid-read. -->
+    <div id="ai-card" class="ai-card"></div>
 
     <main id="content">
       <p class="loading">// initializing telemetry…</p>
@@ -31,6 +44,18 @@
       <span id="scanned-at"></span>
       <span class="foot-tag">chrome://telemetry</span>
     </footer>
+
+    <!-- Auto-manage settings modal. Hidden until the gear is clicked; its body is
+         rendered by panel.js from the current settings + action log. -->
+    <div id="settings-modal" class="modal" hidden>
+      <div class="modal-card" role="dialog" aria-label="Auto-manage settings">
+        <div class="modal-head">
+          <span class="modal-title">Auto-Manage</span>
+          <button id="modal-close" class="iconbtn" title="Close">✕</button>
+        </div>
+        <div id="modal-body" class="modal-body"></div>
+      </div>
+    </div>
 
     <script type="module" src="panel.js"></script>
   </body>

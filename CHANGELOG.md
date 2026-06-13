@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.2.0 — 2026-06-12
+
+Everything new since the initial release: a per-site privacy inspector, opt-in auto-management, long-term strain tracking, an optional AI read of the whole console, and a collapsible UI to keep it all navigable.
+
+### Current Tab inspector
+- New **Current Tab** card (`current-tab-ui.js`) showing ads / trackers / third-parties / cookies for the page you're actually looking at — refreshes as you switch tabs, independent of the main scan loop.
+- **Tracker classification** (`trackers.js`) — the in-page probe already reports the unique hostnames a page contacted; we match each against a curated ad/analytics/social/consent database (suffix-matched, eTLD+1 aware). Deliberately **does not** use `webRequest` — that's the same broad API Vantage flags as heavy in *other* extensions.
+- **Cookie inspector** (`cookies.js`) — first-party cookie summary (count, size, secure/httpOnly/session split, SameSite breakdown) via `chrome.cookies`, plus a per-tracker-domain cookie probe to reveal which trackers actually planted state. One-click **clear cookies** for the active site (confirmed first).
+- Adds the `cookies` permission.
+
+### Auto-Management (opt-in)
+- Rule-based **auto-sleep / auto-close** of tabs that stay strained too long (`automation.js`, `settings.js`, `automation-ui.js`). Ships **off**; nothing is ever auto-acted until you enable it.
+- Adds the missing dimension the analyzer doesn't have — **time**: a tab is acted on only after staying continuously strained for a configurable **sustain window** (default 5 min). Momentary spikes never cost a tab.
+- Triggers (each individually toggleable, each `sleep` or `close`): **background CPU drain** and **memory leak**. Every action re-validates live tab state at the moment it acts and never touches active / pinned / audible tabs.
+- **Audit log** of every auto-action (what, why, when) in a settings modal, so an auto-close is never a silent disappearance. Strain tracker lives in `storage.session` (resets per browser run); settings + log live in `storage.local`.
+
+### Chronic Strain tracking
+- New persistent **per-origin strain ledger** (`strain-history.js`) — the orthogonal axis to the existing per-origin averages: not *how heavy on average* but *how often, and how persistently, a site crosses into strain over time*.
+- Each background scan folds that scan's strained origins (jank / background CPU / leak / poor vitals) into the ledger: episode count, current/worst consecutive **streak**, and per-kind tallies. Survives restarts (`storage.local`); self-prunes origins quiet for 30 days.
+- New **Chronic Strain** section surfaces repeat offenders (flagged in ≥ 5 scans and still strained within 7 days), sorted by episodes/streak, marking which are open right now. Open chronic sites also feed the health verdict.
+
+### AI Analysis (optional, bring-your-own key)
+- New **AI Analysis** card (`ai-analysis.js`, `ai-ui.js`) — on demand, ships the analyzed summary to the Anthropic API and renders Claude's plain-English verdict plus prioritized, severity-ranked suggestions.
+- **Bring-your-own API key**, stored only in `storage.local` on this machine; the feature is dormant until a key is added. **On-demand only** (never on the live scan loop, so it never costs money silently).
+- Uses **structured outputs** (`output_config.format` + JSON schema) so the reply is always renderable without fragile parsing; defaults to `claude-opus-4-8`, switchable to Sonnet/Haiku in settings. Friendly mapping of API errors (bad key, rate limit, offline) into the card.
+
+### UI
+- **Collapsible sections** — every data section's header is now a collapse toggle (rotating caret + item-count badge); collapse state survives the 5s live refresh, alongside the existing expand/sort state.
+- **Collapsible AI card** — once a result exists, its header collapses the (tall) analysis so it doesn't crowd out everything below; re-running re-expands automatically.
+- Settings modal gains an **AI Analysis** section (API key + model).
+
+### Fixes
+- `.ai-card` was missing `flex-shrink: 0`; the growing content area squeezed it and `overflow: hidden` clipped its body to a bare header. Now matches the other out-of-`#content` cards.
+
 ## v0.1.0 — 2026-06-11
 
 Initial release of **Vantage** — a live performance console for Chrome. Read-only monitoring and diagnosis, plus manual tab cleanup actions.

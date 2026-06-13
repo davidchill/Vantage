@@ -68,15 +68,107 @@ function lineRow(key, expanded, cls, titleHtml, metaHtml, actionsHtml, item, lea
   return open ? head + detailBlock(item) : head;
 }
 
-/** A section with a hairline-boxed list of log lines (or an empty marker). */
-function section(title, rows, emptyMsg, slot = "") {
-  const head = `<div class="sec-head"><span class="sec-mark"></span><span class="sec-title">${title}</span>${
-    slot && rows.length ? `<span class="sec-slot">${slot}</span>` : ""
-  }</div>`;
+/**
+ * A section with a hairline-boxed list of log lines (or an empty marker).
+ * The header is a collapse toggle: clicking it hides the body. Collapsed state is
+ * keyed by `id` in the `collapsed` Set so it survives the 5s live re-render.
+ */
+function section(id, title, rows, emptyMsg, slot = "", collapsed) {
+  const isCollapsed = !!(collapsed && collapsed.has(id));
+  const count = rows.length ? `<span class="sec-count">${rows.length}</span>` : "";
+  const head = `<div class="sec-head" data-sec="${esc(id)}" role="button" aria-expanded="${!isCollapsed}">
+      <span class="caret sec-caret">›</span>
+      <span class="sec-mark"></span>
+      <span class="sec-title">${title}</span>
+      ${count}
+      ${slot && rows.length ? `<span class="sec-slot">${slot}</span>` : ""}
+    </div>`;
   const body = rows.length
     ? `<div class="lines">${rows.join("")}</div>`
     : `<div class="empty">${emptyMsg}</div>`;
-  return `<section class="sec">${head}${body}</section>`;
+  // Body is always in the DOM; CSS hides it when the section carries .collapsed.
+  return `<section class="sec${isCollapsed ? " collapsed" : ""}">${head}${body}</section>`;
+}
+
+// ── Sorting ──────────────────────────────────────────────────────────────────
+// Each data section can be re-ordered from its header. The FIRST option in each
+// list reproduces that section's existing default order, so nothing moves until
+// the user clicks. Direction is baked into each option's meaning ("most idle" vs
+// "least idle") rather than a separate asc/desc toggle — clearer at a glance, and
+// it survives the 5s re-render because clicking just cycles + re-renders.
+function cmpStr(a, b) {
+  return String(a || "").localeCompare(String(b || ""));
+}
+
+const SORTS = {
+  heavy: [
+    { key: "weight", label: "weight", cmp: (a, b) => b.score - a.score },
+    { key: "cpu", label: "cpu", cmp: (a, b) => b.blockingMs - a.blockingMs },
+    { key: "mem", label: "memory", cmp: (a, b) => (b.jsHeapMB || 0) - (a.jsHeapMB || 0) },
+    { key: "name", label: "name", cmp: (a, b) => cmpStr(a.title, b.title) },
+  ],
+  dupes: [
+    { key: "count", label: "count", cmp: (a, b) => b.count - a.count },
+    { key: "name", label: "name", cmp: (a, b) => cmpStr(a.title, b.title) },
+  ],
+  chronic: [
+    {
+      key: "episodes",
+      label: "episodes",
+      cmp: (a, b) => b.strainScans - a.strainScans || b.maxStreak - a.maxStreak,
+    },
+    { key: "streak", label: "streak", cmp: (a, b) => b.maxStreak - a.maxStreak },
+    { key: "recent", label: "recent", cmp: (a, b) => b.lastStrained - a.lastStrained },
+    { key: "name", label: "name", cmp: (a, b) => cmpStr(a.origin, b.origin) },
+  ],
+  idle: [
+    { key: "idle", label: "most idle", cmp: (a, b) => b.idleMinutes - a.idleMinutes },
+    { key: "recent", label: "least idle", cmp: (a, b) => a.idleMinutes - b.idleMinutes },
+    { key: "name", label: "name", cmp: (a, b) => cmpStr(a.title, b.title) },
+  ],
+  domains: [
+    { key: "tabs", label: "tabs", cmp: (a, b) => b.count - a.count },
+    { key: "name", label: "name", cmp: (a, b) => cmpStr(a.host, b.host) },
+  ],
+  ext: [
+    {
+      key: "impact",
+      label: "impact",
+      cmp: (a, b) =>
+        b.weight - a.weight || b.warningCount - a.warningCount || cmpStr(a.name, b.name),
+    },
+    { key: "warnings", label: "warnings", cmp: (a, b) => b.warningCount - a.warningCount },
+    { key: "name", label: "name", cmp: (a, b) => cmpStr(a.name, b.name) },
+  ],
+};
+
+/** The active sort option for a section (defaults to the first / current order). */
+function activeSort(sectionId, sortState) {
+  const opts = SORTS[sectionId];
+  if (!opts) return null;
+  return opts.find((o) => o.key === sortState.get(sectionId)) || opts[0];
+}
+
+/** A re-ordered copy of `list` per the section's active sort. */
+function sortedFor(sectionId, list, sortState) {
+  const opt = activeSort(sectionId, sortState);
+  return opt ? [...list].sort(opt.cmp) : list;
+}
+
+/** Header control showing the current sort; cycles to the next on click. */
+function sortControl(sectionId, sortState) {
+  const opt = activeSort(sectionId, sortState);
+  if (!opt) return "";
+  return `<button class="sortbtn" data-sort="${sectionId}" title="Sort — click to cycle"><span class="sortbtn-ico">⇅</span>${esc(opt.label)}</button>`;
+}
+
+/** Advance a section to its next sort option (wraps). Mutates `sortState`. */
+export function advanceSort(sortState, sectionId) {
+  const opts = SORTS[sectionId];
+  if (!opts) return;
+  const curKey = sortState.get(sectionId) || opts[0].key;
+  const idx = opts.findIndex((o) => o.key === curKey);
+  sortState.set(sectionId, opts[(idx + 1) % opts.length].key);
 }
 
 /** Sleep + close controls for a tab (Sleep hidden if it's already asleep). */
@@ -111,7 +203,14 @@ function sourceBadge(e) {
  * Render a summary into the given container element.
  * @param {Set<string>} expanded — keys of rows that should be shown expanded.
  */
-export function renderSummary(contentEl, summary, cpuPercent, expanded = new Set()) {
+export function renderSummary(
+  contentEl,
+  summary,
+  cpuPercent,
+  expanded = new Set(),
+  sortState = new Map(),
+  collapsed = new Set()
+) {
   const { totals, memory, idleTabs, duplicates, heavyDomains, heavyTabs, extensions } =
     summary;
 
@@ -140,6 +239,11 @@ export function renderSummary(contentEl, summary, cpuPercent, expanded = new Set
     readout(totals.audible, "audio", totals.audible > 0) +
     readout(duplicates.length, "dupe sets", duplicates.length > 0) +
     readout(idleTabs.length, "idle", idleTabs.length > 0) +
+    readout(
+      (summary.performance?.chronic || []).length,
+      "chronic",
+      (summary.performance?.chronic || []).length > 0
+    ) +
     `</div>`;
 
   // ── Telemetry gauges ────────────────────────────────────────────────────
@@ -205,9 +309,24 @@ export function renderSummary(contentEl, summary, cpuPercent, expanded = new Set
   const perfEmpty =
     perf && !perf.hasData ? "// gathering data — browse a little" : "// all clear";
 
+  // ── Chronic strain (repeat offenders over time) ─────────────────────────
+  const chronicRows = sortedFor("chronic", (perf && perf.chronic) || [], sortState).map((c) => {
+    const bits = [`×${c.strainScans}`];
+    if (c.topLabel) bits.push(c.topLabel);
+    if (c.maxStreak >= 2) bits.push(`streak ${c.maxStreak}`);
+    bits.push(c.ageDays < 1 ? "today" : `${c.ageDays}d`);
+    if (c.open) bits.push("open now");
+    const title = `${c.open ? "🔴" : "🔁"} ${esc(c.origin)}`;
+    return lineRow(`pc:${c.origin}`, expanded, c.open ? "warn" : "", title, bits.join(" · "), "", c);
+  });
+  const chronicEmpty =
+    perf && !perf.hasData
+      ? "// gathering data — browse a little"
+      : "// no repeat offenders — sites behave consistently";
+
   // ── Likely heavy tabs ───────────────────────────────────────────────────
   const warnMs = (perf && perf.warnMs) || 400;
-  const heavyTabRows = (heavyTabs || []).map((t) => {
+  const heavyTabRows = sortedFor("heavy", heavyTabs || [], sortState).map((t) => {
     let note;
     if (t.blockingMs >= warnMs) note = `⚠ ${t.blockingMs}ms`;
     else if (t.audible) note = "🔊 media";
@@ -218,7 +337,7 @@ export function renderSummary(contentEl, summary, cpuPercent, expanded = new Set
   });
 
   // ── Duplicates / idle / domains ─────────────────────────────────────────
-  const dupeRows = duplicates.slice(0, 8).map((d) =>
+  const dupeRows = sortedFor("dupes", duplicates, sortState).slice(0, 8).map((d) =>
     lineRow(
       `dp:${d.url}`,
       expanded,
@@ -232,7 +351,7 @@ export function renderSummary(contentEl, summary, cpuPercent, expanded = new Set
     )
   );
 
-  const idleRows = idleTabs.slice(0, 8).map((t) =>
+  const idleRows = sortedFor("idle", idleTabs, sortState).slice(0, 8).map((t) =>
     lineRow(
       `id:${t.id}`,
       expanded,
@@ -244,12 +363,14 @@ export function renderSummary(contentEl, summary, cpuPercent, expanded = new Set
     )
   );
 
-  const domainRows = heavyDomains
+  const domainRows = sortedFor("domains", heavyDomains, sortState)
     .slice(0, 8)
     .map((d) => lineRow(`dm:${d.host}`, expanded, "", esc(d.host), `${d.count} tabs`, "", d));
 
   // ── Extensions ──────────────────────────────────────────────────────────
-  const extRows = ((extensions && extensions.list) || []).slice(0, 15).map((e) => {
+  const extRows = sortedFor("ext", (extensions && extensions.list) || [], sortState)
+    .slice(0, 15)
+    .map((e) => {
     const icon = e.iconUrl
       ? `<img class="ext-ico" src="${esc(e.iconUrl)}" alt="" />`
       : `<span class="ext-ico ext-fallback"></span>`;
@@ -274,12 +395,41 @@ export function renderSummary(contentEl, summary, cpuPercent, expanded = new Set
     verdict +
     cluster +
     gauges +
-    section("Page Performance", perfRows, perfEmpty, `<span class="sec-note">live + predicted</span>`) +
-    section("Likely Heavy Tabs", heavyTabRows, "// nothing looks heavy", `<span class="sec-note">best guess</span>`) +
-    section("Duplicate Tabs", dupeRows, "// no duplicates", purgeDupes) +
-    section("Idle Tabs · 60m+", idleRows, "// nothing idle", sleepIdle) +
-    section("Crowded Domains", domainRows, "// no domain hogging tabs") +
-    section("Extensions", extRows, "// no other extensions", extHeader);
+    section("perf", "Page Performance", perfRows, perfEmpty, `<span class="sec-note">live + predicted</span>`, collapsed) +
+    section(
+      "chronic",
+      "Chronic Strain",
+      chronicRows,
+      chronicEmpty,
+      sortControl("chronic", sortState) + `<span class="sec-note">over time</span>`,
+      collapsed
+    ) +
+    section(
+      "heavy",
+      "Likely Heavy Tabs",
+      heavyTabRows,
+      "// nothing looks heavy",
+      sortControl("heavy", sortState) + `<span class="sec-note">best guess</span>`,
+      collapsed
+    ) +
+    section(
+      "dupes",
+      "Duplicate Tabs",
+      dupeRows,
+      "// no duplicates",
+      sortControl("dupes", sortState) + purgeDupes,
+      collapsed
+    ) +
+    section(
+      "idle",
+      "Idle Tabs · 60m+",
+      idleRows,
+      "// nothing idle",
+      sortControl("idle", sortState) + sleepIdle,
+      collapsed
+    ) +
+    section("domains", "Crowded Domains", domainRows, "// no domain hogging tabs", sortControl("domains", sortState), collapsed) +
+    section("ext", "Extensions", extRows, "// no other extensions", sortControl("ext", sortState) + extHeader, collapsed);
 
   const scannedAt = document.getElementById("scanned-at");
   if (scannedAt) {
@@ -291,13 +441,18 @@ export function renderSummary(contentEl, summary, cpuPercent, expanded = new Set
  * Scan + analyze + render in one call. Returns the data so the caller can
  * re-render instantly (e.g. on expand/collapse) without another scan.
  */
-export async function runAndRender(contentEl, expanded = new Set()) {
+export async function runAndRender(
+  contentEl,
+  expanded = new Set(),
+  sortState = new Map(),
+  collapsed = new Set()
+) {
   const [snapshot, cpuPercent] = await Promise.all([
     collectSnapshot(),
     sampleCpuPercent().catch(() => null),
   ]);
   const summary = analyze(snapshot);
-  renderSummary(contentEl, summary, cpuPercent, expanded);
+  renderSummary(contentEl, summary, cpuPercent, expanded, sortState, collapsed);
   return { summary, cpuPercent };
 }
 

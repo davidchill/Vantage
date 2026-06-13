@@ -81,10 +81,25 @@
 
     let resourceCount = 0;
     let transferBytes = 0;
+    // Unique cross-host endpoints this page contacted — the raw material the
+    // panel classifies into ads/trackers. We send hostnames only (not full URLs)
+    // and exclude our own host, keeping the payload small.
+    const hosts = new Set();
+    const selfHost = location.hostname;
     try {
       const res = performance.getEntriesByType("resource");
       resourceCount = res.length;
-      for (const r of res) transferBytes += r.transferSize || 0;
+      for (const r of res) {
+        transferBytes += r.transferSize || 0;
+        if (hosts.size < 200) {
+          try {
+            const h = new URL(r.name).hostname;
+            if (h && h !== selfHost) hosts.add(h);
+          } catch {
+            /* non-URL resource name */
+          }
+        }
+      }
     } catch {
       /* ignore */
     }
@@ -112,6 +127,7 @@
       domNodes: document.getElementsByTagName("*").length,
       resourceCount,
       transferMB: +(transferBytes / 1048576).toFixed(1),
+      resourceHosts: [...hosts],
       lcpMs,
       cls: +cls.toFixed(3),
       inpMs: inpMs || null,

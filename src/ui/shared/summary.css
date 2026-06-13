@@ -355,6 +355,8 @@ main::-webkit-scrollbar-thumb:hover {
   align-items: center;
   gap: 8px;
   margin-bottom: 7px;
+  cursor: pointer;
+  user-select: none;
 }
 .sec-mark {
   width: 6px;
@@ -369,6 +371,32 @@ main::-webkit-scrollbar-thumb:hover {
   text-transform: uppercase;
   color: var(--text-2);
 }
+/* Collapse caret: points down when open, right when collapsed (mirrors rows). */
+.sec-caret {
+  font-size: 11px;
+}
+.sec:not(.collapsed) .sec-caret {
+  transform: rotate(90deg);
+  color: var(--text-2);
+}
+.sec-head:hover .sec-title {
+  color: var(--text);
+}
+/* Count of hidden items, useful at a glance when a section is collapsed. */
+.sec-count {
+  font-size: 9px;
+  padding: 0 5px;
+  border-radius: 7px;
+  background: var(--line);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+/* Collapsed: hide the body and the header's sort/action controls. */
+.sec.collapsed .lines,
+.sec.collapsed .empty,
+.sec.collapsed .sec-slot {
+  display: none;
+}
 .sec-slot {
   margin-left: auto;
   display: flex;
@@ -379,6 +407,34 @@ main::-webkit-scrollbar-thumb:hover {
   font-size: 9px;
   color: var(--muted);
   letter-spacing: 0.06em;
+}
+
+/* Per-section sort control — click cycles through the section's sort options. */
+.sortbtn {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 2px 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.sortbtn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(91, 157, 255, 0.08);
+}
+.sortbtn-ico {
+  font-size: 10px;
+  opacity: 0.8;
 }
 
 .lines {
@@ -641,6 +697,395 @@ main::-webkit-scrollbar-thumb:hover {
   color: var(--text);
 }
 
+/* ── Auto-manage status strip ────────────────────────────────────────────── */
+.auto-strip {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 10px 13px 0;
+  padding: 8px 11px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--muted);
+  border-radius: var(--radius);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color 0.12s, background 0.12s;
+}
+.auto-strip[hidden] {
+  display: none;
+}
+.auto-strip:hover {
+  background: var(--panel);
+}
+.auto-strip.on {
+  border-left-color: var(--good);
+}
+.auto-label {
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  color: var(--text-2);
+}
+.auto-sum {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.auto-strip.on .auto-sum {
+  color: var(--good);
+}
+
+/* The little toggle switch (used in the strip; the modal reuses native checkboxes). */
+.sw {
+  position: relative;
+  width: 30px;
+  height: 16px;
+  border-radius: 9px;
+  background: var(--line);
+  border: 1px solid var(--line-2);
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.auto-strip.on .sw {
+  background: rgba(68, 196, 122, 0.35);
+  border-color: var(--good);
+}
+.sw-dot {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 0.15s, background 0.15s;
+}
+.auto-strip.on .sw-dot {
+  transform: translateX(14px);
+  background: var(--good);
+}
+
+/* ── Settings modal ──────────────────────────────────────────────────────── */
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 24px 16px;
+  background: rgba(6, 8, 12, 0.66);
+  backdrop-filter: blur(2px);
+  animation: fadein 0.18s ease both;
+  overflow-y: auto;
+}
+.modal[hidden] {
+  display: none;
+}
+.modal-card {
+  width: 100%;
+  max-width: 360px;
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 13px;
+  border-bottom: 1px solid var(--line);
+}
+.modal-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+.modal-body {
+  padding: 13px;
+}
+.set-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 0;
+}
+.set-row.trig {
+  border-top: 1px solid var(--line);
+}
+.set-row.trig.off {
+  opacity: 0.5;
+}
+.set-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.set-check input {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+.set-lbl {
+  color: var(--text-2);
+}
+.set-note {
+  margin: 2px 0 10px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.set-num input {
+  width: 48px;
+}
+.set-num {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.set-num input,
+.set-select {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  padding: 3px 6px;
+}
+.set-select {
+  cursor: pointer;
+  text-transform: lowercase;
+}
+.set-sec {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 12px 0 2px;
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+/* ── Action log (inside the modal) ───────────────────────────────────────── */
+.log-list {
+  margin-top: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.log-list:empty {
+  display: none;
+}
+.log-row {
+  background: var(--panel);
+  padding: 7px 9px;
+}
+.log-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.log-act {
+  font-size: 8.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--line-2);
+  color: var(--text-2);
+  flex-shrink: 0;
+}
+.log-act.danger {
+  color: var(--danger);
+  border-color: rgba(242, 88, 74, 0.4);
+}
+.log-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.log-when {
+  flex-shrink: 0;
+  font-size: 9px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.log-reason {
+  margin-top: 3px;
+  font-size: 9.5px;
+  color: var(--text-2);
+  line-height: 1.4;
+}
+
+/* ── Current-tab inspector ───────────────────────────────────────────────── */
+.ct-card {
+  margin: 10px 13px 0;
+  padding: 10px 11px 11px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  flex-shrink: 0;
+}
+.ct-card[hidden] {
+  display: none;
+}
+.ct-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.ct-mark {
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--accent);
+  transform: rotate(45deg);
+  flex-shrink: 0;
+}
+.ct-title {
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  color: var(--text-2);
+}
+.ct-slot {
+  margin-left: auto;
+}
+.ct-note {
+  font-size: 10px;
+  color: var(--muted);
+  margin-bottom: 8px;
+  word-break: break-all;
+}
+.ct-empty {
+  font-size: 10.5px;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+.ct-cluster {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  cursor: pointer;
+  position: relative;
+}
+.ct-cluster::after {
+  content: "›";
+  position: absolute;
+  top: 3px;
+  right: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  transition: transform 0.15s ease;
+}
+.ct-cluster.open::after {
+  transform: rotate(90deg);
+  color: var(--accent);
+}
+.ct-cluster .readout {
+  padding: 8px 9px;
+}
+.ct-cluster .rv {
+  font-size: 17px;
+}
+
+/* Expanded detail: domain / cookie lists */
+.ct-detail {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+}
+.ct-sub {
+  font-size: 8.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 10px 0 5px;
+}
+.ct-sub:first-child {
+  margin-top: 0;
+}
+.ct-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.ct-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10.5px;
+}
+.ct-dom {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.ct-n {
+  flex-shrink: 0;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.ct-tag {
+  flex-shrink: 0;
+  font-size: 8px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--line-2);
+  color: var(--text-2);
+}
+.ct-tag.ads {
+  color: var(--danger);
+  border-color: rgba(242, 88, 74, 0.4);
+}
+.ct-tag.analytics {
+  color: var(--warn);
+  border-color: rgba(227, 163, 59, 0.4);
+}
+.ct-tag.social {
+  color: var(--accent);
+  border-color: rgba(91, 157, 255, 0.4);
+}
+.ct-tag.other {
+  color: var(--text-2);
+}
+.ct-tag.third {
+  color: var(--muted);
+}
+
 /* ── Keyframes ───────────────────────────────────────────────────────────── */
 @keyframes spin {
   to {
@@ -684,4 +1129,163 @@ main::-webkit-scrollbar-thumb:hover {
   *::before {
     animation: none !important;
   }
+}
+
+/* ── AI settings field (in the modal) ────────────────────────────────────── */
+.set-text {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  padding: 4px 7px;
+}
+.set-text:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* ── AI Analysis card ────────────────────────────────────────────────────── */
+.ai-card {
+  margin: 10px 13px 0;
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  overflow: hidden;
+  /* Sits in the body flex-column alongside #content (flex: 1). Without this the
+     growing content area squeezes this card and overflow:hidden clips the body
+     to just the header. Matches .deep-result / .ct-card / .auto-strip. */
+  flex-shrink: 0;
+}
+.ai-card:empty {
+  display: none;
+}
+.ai-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 11px;
+}
+/* Once a result exists the header becomes a collapse toggle (matches sections). */
+.ai-head[data-act="ai-toggle"] {
+  cursor: pointer;
+  user-select: none;
+}
+.ai-card .sec-caret {
+  font-size: 11px;
+}
+.ai-card:not(.collapsed) .sec-caret {
+  transform: rotate(90deg);
+  color: var(--text-2);
+}
+.ai-mark {
+  color: var(--accent);
+}
+.ai-title {
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.ai-run {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.ai-run:hover:not(:disabled) {
+  background: var(--line);
+}
+.ai-run.busy,
+.ai-run:disabled {
+  color: var(--muted);
+  border-color: var(--line-2);
+  cursor: default;
+}
+.ai-body {
+  padding: 0 11px 11px;
+}
+.ai-card.collapsed .ai-body {
+  display: none;
+}
+.ai-status {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.ai-error {
+  font-size: 11.5px;
+  color: var(--danger);
+  line-height: 1.45;
+}
+.ai-headline {
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.45;
+  margin-bottom: 9px;
+}
+.ai-sug {
+  border-top: 1px solid var(--line);
+  padding: 8px 0 7px 9px;
+  border-left: 2px solid var(--line-2);
+  margin-left: 1px;
+}
+.ai-sug.sev-high {
+  border-left-color: var(--danger);
+}
+.ai-sug.sev-medium {
+  border-left-color: var(--warn);
+}
+.ai-sug.sev-low {
+  border-left-color: var(--good);
+}
+.ai-sug-top {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+.ai-sev {
+  flex: none;
+  font-size: 8.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--line);
+  color: var(--text-2);
+}
+.ai-sev.sev-high {
+  color: var(--danger);
+}
+.ai-sev.sev-medium {
+  color: var(--warn);
+}
+.ai-sev.sev-low {
+  color: var(--good);
+}
+.ai-sug-title {
+  font-size: 12px;
+  color: var(--text);
+}
+.ai-sug-detail {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.ai-foot {
+  margin-top: 9px;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  text-transform: lowercase;
 }

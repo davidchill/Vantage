@@ -5,6 +5,8 @@
 import { collectSnapshot } from "../core/collector.js";
 import { analyze } from "../core/analyzer.js";
 import { recordPerfReport, dropLiveTab } from "../core/perf-store.js";
+import { recordStrain } from "../core/strain-history.js";
+import { runAutomation } from "../core/automation.js";
 import {
   ALARM_NAME,
   SCAN_INTERVAL_MINUTES,
@@ -15,7 +17,36 @@ async function scan() {
   const summary = analyze(await collectSnapshot());
   await chrome.storage.session.set({ [SESSION_KEY]: summary });
   updateBadge(summary);
+
+  // Fold this scan's strained origins into the persistent chronic-strain ledger.
+  // Done here (once per authoritative scan), never on the panel's 5s re-render,
+  // so episode counts track real time rather than render frequency. Isolated so a
+  // storage hiccup never breaks the scan.
+  try {
+    await recordStrain(summary, summary.takenAt);
+  } catch (err) {
+    console.warn("strain record failed:", err);
+  }
+
+  // Rule-based auto-management: act on tabs that have been strained too long.
+  // No-op unless the user has enabled it in settings. Isolated so a failure here
+  // never breaks the monitoring scan itself.
+  try {
+    const acted = await runAutomation(summary, summary.takenAt);
+    if (acted.length) await scanAfterAutomation();
+  } catch (err) {
+    console.warn("automation run failed:", err);
+  }
+
   return summary;
+}
+
+// After automation sleeps/closes tabs, the cached summary is stale. Re-scan once
+// (without re-running automation) so the badge and panel reflect the new state.
+async function scanAfterAutomation() {
+  const summary = analyze(await collectSnapshot());
+  await chrome.storage.session.set({ [SESSION_KEY]: summary });
+  updateBadge(summary);
 }
 
 function updateBadge(summary) {

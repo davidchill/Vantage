@@ -2,6 +2,7 @@
 // No analysis here; this layer just answers "what is currently true?".
 
 import { getPerf } from "./perf-store.js";
+import { getStrainHistory } from "./strain-history.js";
 
 /**
  * Take a point-in-time snapshot of tabs, groups, and system memory.
@@ -9,12 +10,13 @@ import { getPerf } from "./perf-store.js";
  * two readings over a short interval to produce a percentage.
  */
 export async function collectSnapshot() {
-  const [tabs, groups, memory, extensions, perf] = await Promise.all([
+  const [tabs, groups, memory, extensions, perf, strainHistory] = await Promise.all([
     chrome.tabs.query({}),
     chrome.tabGroups?.query ? chrome.tabGroups.query({}) : Promise.resolve([]),
     chrome.system.memory.getInfo(),
     collectExtensions(),
     getPerf(),
+    getStrainHistory(),
   ]);
 
   return {
@@ -24,6 +26,7 @@ export async function collectSnapshot() {
     extensions,
     perfLive: perf.live,
     perfHistory: perf.history,
+    strainHistory,
     takenAt: Date.now(),
   };
 }

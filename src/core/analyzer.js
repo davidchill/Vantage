@@ -14,6 +14,8 @@ import {
   LCP_POOR_MS,
   INP_POOR_MS,
   CLS_POOR,
+  CHRONIC_MIN_EPISODES,
+  CHRONIC_RECENT_DAYS,
 } from "./constants.js";
 import { computeHealth } from "./health.js";
 
@@ -57,6 +59,14 @@ const HEAVY_APIS = [
 
 // Host-permission patterns that grant access to (effectively) every site.
 const ALL_SITES = /<all_urls>|\*:\/\/\*|:\/\/\*\//;
+
+// Human labels for the strain kinds recorded in the chronic-strain ledger.
+const CHRONIC_KIND_LABELS = {
+  jank: "jank",
+  background: "background CPU",
+  leak: "memory growth",
+  vitals: "poor vitals",
+};
 
 /**
  * Infer how impactful an extension is likely to be from its permissions.
@@ -167,7 +177,14 @@ function tabStats(t, live, now) {
  *          action UIs (sleep/close) can act on via the included tab ids.
  */
 export function analyze(snapshot) {
-  const { tabs, groups = [], memory, perfLive = {}, perfHistory = {} } = snapshot;
+  const {
+    tabs,
+    groups = [],
+    memory,
+    perfLive = {},
+    perfHistory = {},
+    strainHistory = {},
+  } = snapshot;
   const now = snapshot.takenAt || Date.now();
   const idleMs = IDLE_MINUTES * 60 * 1000;
 
@@ -377,6 +394,53 @@ export function analyze(snapshot) {
   }
   predictions.sort((a, b) => b.avgBlockingMs - a.avgBlockingMs);
 
+  // (e) Chronic offenders: origins the strain ledger has flagged again and again
+  //     over time. This is the "continuously causing strain" surface — distinct
+  //     from the live lists (a moment) and predictions (an average); it's about
+  //     PERSISTENCE. We mark which chronic origins are open right now so the UI
+  //     can offer to act on them.
+  const openOrigins = new Set();
+  for (const t of tabs) {
+    const o = originOf(t.url || "");
+    if (o) openOrigins.add(o);
+  }
+  const chronicRecentMs = CHRONIC_RECENT_DAYS * 86400000;
+  const chronic = [];
+  for (const [origin, r] of Object.entries(strainHistory)) {
+    if (r.strainScans < CHRONIC_MIN_EPISODES) continue;
+    if (now - r.lastStrained > chronicRecentMs) continue; // only ongoing problems
+
+    const kinds = r.kinds || {};
+    const sortedKinds = Object.entries(kinds).sort((a, b) => b[1] - a[1]);
+    const topKind = sortedKinds.length ? sortedKinds[0][0] : null;
+    const ageDays = Math.round((now - r.firstSeen) / 86400000);
+    const lastAgoMs = now - r.lastStrained;
+
+    const stats = [
+      ["strained scans", r.strainScans],
+      ["current streak", r.streak],
+      ["worst streak", r.maxStreak],
+      ["first flagged", ageDays < 1 ? "today" : `${ageDays}d ago`],
+      ["last strained", lastAgoMs < 90000 ? "now" : fmtAgo(lastAgoMs)],
+    ];
+    for (const [k, n] of sortedKinds) stats.push([CHRONIC_KIND_LABELS[k] || k, n]);
+
+    chronic.push({
+      origin,
+      strainScans: r.strainScans,
+      streak: r.streak,
+      maxStreak: r.maxStreak,
+      topKind,
+      topLabel: CHRONIC_KIND_LABELS[topKind] || topKind,
+      ageDays,
+      lastStrained: r.lastStrained,
+      open: openOrigins.has(origin),
+      stats,
+    });
+  }
+  // Worst repeat offenders first: by total episodes, then worst sustained streak.
+  chronic.sort((a, b) => b.strainScans - a.strainScans || b.maxStreak - a.maxStreak);
+
   const perfSummary = {
     warnMs: BLOCKING_WARN_MS,
     hasData: Object.keys(perfLive).length > 0,
@@ -384,6 +448,7 @@ export function analyze(snapshot) {
     background: backgroundDrain,
     leaks,
     predictions,
+    chronic,
   };
 
   // Extension inventory, ranked by inferred impact (breadth, then warnings).
@@ -457,6 +522,9 @@ export function analyze(snapshot) {
     leaks: leaks.length,
     liveJank: liveWarnings.length,
     heavyOrigins: predictions.filter((p) => p.heavy).length,
+    // Only count chronic offenders that are actually open right now — a repeat
+    // offender you've already closed isn't straining the browser this moment.
+    chronicOpen: chronic.filter((c) => c.open).length,
   });
 
   return {

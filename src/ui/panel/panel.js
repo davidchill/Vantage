@@ -2,7 +2,7 @@
 // Because the panel stays open while you browse, it live-updates on an
 // interval instead of only when opened.
 
-import { runAndRender, renderSummary, esc } from "../shared/summary-view.js";
+import { runAndRender, renderSummary, advanceSort, esc } from "../shared/summary-view.js";
 import { VERSION } from "../../core/constants.js";
 import {
   sleepTab,
@@ -11,6 +11,9 @@ import {
   sleepAllIdle,
   closeAllDuplicateExtras,
 } from "../../core/actions.js";
+import { initAutomationUI } from "./automation-ui.js";
+import { initCurrentTabUI } from "./current-tab-ui.js";
+import { initAIUI } from "./ai-ui.js";
 
 const content = document.getElementById("content");
 const refreshBtn = document.getElementById("refresh");
@@ -66,6 +69,12 @@ let busy = false; // prevents overlapping scans
 // periodic re-render. `last` caches the most recent scan so toggling a row can
 // re-render instantly without waiting on a fresh scan.
 const expandedKeys = new Set();
+// Per-section sort choice (section id -> option key). In-memory like expandedKeys
+// so it survives the 5s re-render; resets when the panel is closed.
+const sortState = new Map();
+// Which sections are collapsed (section id). Same lifetime as the above — kept so
+// the live re-render and sort/expand actions don't reopen a section you closed.
+const collapsedSections = new Set();
 let last = null;
 
 async function refresh() {
@@ -73,7 +82,7 @@ async function refresh() {
   busy = true;
   refreshBtn.classList.add("spin");
   try {
-    last = await runAndRender(content, expandedKeys);
+    last = await runAndRender(content, expandedKeys, sortState, collapsedSections);
   } catch (err) {
     content.innerHTML = `<p class="loading">// scan error: ${esc(err.message)}</p>`;
   } finally {
@@ -85,7 +94,20 @@ async function refresh() {
 function toggleExpand(key) {
   if (expandedKeys.has(key)) expandedKeys.delete(key);
   else expandedKeys.add(key);
-  if (last) renderSummary(content, last.summary, last.cpuPercent, expandedKeys);
+  rerender();
+}
+
+// Collapse/expand a whole section, then re-render instantly from the cached scan.
+function toggleCollapse(id) {
+  if (collapsedSections.has(id)) collapsedSections.delete(id);
+  else collapsedSections.add(id);
+  rerender();
+}
+
+// Re-render instantly from the cached scan after a sort/expand/collapse change.
+function rerender() {
+  if (last)
+    renderSummary(content, last.summary, last.cpuPercent, expandedKeys, sortState, collapsedSections);
 }
 
 refreshBtn.addEventListener("click", refresh);
@@ -103,8 +125,23 @@ content.addEventListener(
 // Tab actions, via event delegation on the container so the handler survives
 // the periodic innerHTML re-renders. Each button carries data-act (+ ids).
 content.addEventListener("click", async (e) => {
+  // Section sort control — cycle to the next option and re-render in place.
+  const sortBtn = e.target.closest("button[data-sort]");
+  if (sortBtn) {
+    advanceSort(sortState, sortBtn.dataset.sort);
+    rerender();
+    return;
+  }
+
   const btn = e.target.closest("button[data-act]");
   if (!btn) {
+    // A click on a section header (but not its sort/action buttons, handled above)
+    // collapses or expands that whole section.
+    const secHead = e.target.closest(".sec-head[data-sec]");
+    if (secHead) {
+      toggleCollapse(secHead.dataset.sec);
+      return;
+    }
     // Not an action button — toggle the row's collapsible detail.
     const line = e.target.closest(".line[data-key]");
     if (line) toggleExpand(line.dataset.key);
@@ -151,6 +188,16 @@ content.addEventListener("click", async (e) => {
 });
 
 refresh();
+
+// Auto-manage status strip + settings modal (independent of the live scan loop).
+initAutomationUI();
+
+// Current-tab inspector: ads / trackers / cookies for the active tab.
+initCurrentTabUI();
+
+// AI analysis card: on-demand Claude read of the latest scan. Hand it an accessor
+// for `last` so the button always analyzes the freshest data.
+initAIUI(() => last);
 
 // Live monitoring: re-scan periodically while the panel is open. The interval
 // is paused when the panel is hidden so we're not sampling CPU needlessly.

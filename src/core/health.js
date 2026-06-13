@@ -11,6 +11,7 @@ export function computeHealth({
   leaks,
   liveJank,
   heavyOrigins,
+  chronicOpen = 0,
 }) {
   const factors = [];
   const add = (label, severity) => factors.push({ label, severity });
@@ -27,6 +28,8 @@ export function computeHealth({
   if (leaks > 0) add(`${leaks} tab${plural(leaks)} growing in memory`, 2);
   if (liveJank > 0) add(`${liveJank} tab${plural(liveJank)} janky right now`, 2);
   if (heavyOrigins > 0) add(`${heavyOrigins} heavy site${plural(heavyOrigins)} open`, 1);
+  if (chronicOpen > 0)
+    add(`${chronicOpen} chronic strain site${plural(chronicOpen)} open`, 2);
 
   const score = factors.reduce((s, f) => s + f.severity, 0);
   let level = "Good";
