@@ -304,9 +304,21 @@ export function analyze(snapshot) {
   // (c) Memory climbing steadily over time (likely leak / accumulator).
   const leaks = [];
 
+  // Measured Chrome JS-heap footprint: sum the per-renderer heap the probe
+  // reports for tabs with a fresh reading. Partial by nature (JS heap only, and
+  // same-origin tabs sharing a renderer can be double-counted), but it's real,
+  // Chrome-attributable, and free — unlike the system-wide MEM/CPU gauges.
+  let measuredHeapMB = 0;
+  let measuredHeapTabs = 0;
+
   for (const t of tabs) {
     const l = liveFor(t.id);
     if (!l) continue;
+
+    if (l.jsHeapMB != null) {
+      measuredHeapMB += l.jsHeapMB;
+      measuredHeapTabs++;
+    }
 
     if (l.blockingMs >= BLOCKING_WARN_MS) {
       liveWarnings.push({
@@ -515,6 +527,17 @@ export function analyze(snapshot) {
     usedPercent: Math.round((usedBytes / memory.capacity) * 100),
   };
 
+  // Measured Chrome JS-heap total, expressed as a share of system RAM so it sits
+  // on the same scale as the SYS MEM gauge. Omitted (tabs: 0) until the probe has
+  // reported, so the UI can hide the gauge rather than show a hollow 0.
+  const chromeHeap = {
+    mb: measuredHeapMB,
+    tabs: measuredHeapTabs,
+    pct: memory.capacity
+      ? Math.round((measuredHeapMB * 1048576 * 100) / memory.capacity)
+      : 0,
+  };
+
   // "Issues" = redundant duplicate tabs + idle tabs. Drives the badge color.
   const redundantDupes = duplicates.reduce((n, d) => n + (d.count - 1), 0);
   const issues = redundantDupes + idleTabs.length;
@@ -552,6 +575,7 @@ export function analyze(snapshot) {
     performance: perfSummary,
     health,
     memory: mem,
+    chromeHeap,
     issues,
   };
 }

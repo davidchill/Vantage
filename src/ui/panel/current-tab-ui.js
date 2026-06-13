@@ -7,6 +7,7 @@
 // stays in sync as you switch tabs without touching the main scan loop.
 
 import { esc, readout } from "../shared/summary-view.js";
+import { CT_TIPS } from "../shared/explainers.js";
 import { PERF_LIVE_KEY } from "../../core/constants.js";
 import { analyzeTrackers, CATEGORY_LABELS } from "../../core/trackers.js";
 import {
@@ -115,6 +116,7 @@ function shell(inner, { showClear = false } = {}) {
     <div class="ct-head">
       <span class="ct-mark"></span>
       <span class="ct-title">CURRENT TAB</span>
+      <button class="sec-info" data-info="ct" title="What is this?" aria-label="About this section">i</button>
       <span class="ct-slot">${clear}</span>
     </div>
     ${inner}`;
@@ -146,10 +148,10 @@ async function render() {
     const gathering = hosts == null;
     const cluster =
       `<div class="ct-cluster${expanded ? " open" : ""}" data-act="toggle">` +
-      readout(gathering ? "…" : trackers.totals.ads, "ads", trackers.totals.ads > 0) +
-      readout(gathering ? "…" : trackers.totals.trackers, "trackers", trackers.totals.trackers > 0) +
-      readout(gathering ? "…" : trackers.totals.thirdParties, "3rd-party") +
-      readout(cookies ? cookies.count : "—", "cookies", cookies && cookies.count > 0) +
+      readout(gathering ? "…" : trackers.totals.ads, "ads", trackers.totals.ads > 0, CT_TIPS.ads) +
+      readout(gathering ? "…" : trackers.totals.trackers, "trackers", trackers.totals.trackers > 0, CT_TIPS.trackers) +
+      readout(gathering ? "…" : trackers.totals.thirdParties, "3rd-party", false, CT_TIPS["3rd-party"]) +
+      readout(cookies ? cookies.count : "—", "cookies", cookies && cookies.count > 0, CT_TIPS.cookies) +
       `</div>`;
 
     const host = esc(trackers.pageDomain || tab.url);

@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.2.5 — 2026-06-13
+
+A quality-of-life release: in-context help layered over the whole panel, plus clearer and more honest resource gauges. No change to the monitoring engine — this is about making the data already on screen easier to read and harder to misread.
+
+### In-context help (new)
+- **Hover tooltips on telemetry items.** The metric cluster readouts (tabs, windows, sleeping, audio, dupe sets, idle, chronic), the gauges, the **System Status** verdict, and the **Current Tab** readouts (ads / trackers / 3rd-party / cookies) each carry a one-line explanation shown on hover or keyboard focus. Positioning is done in JS and clamped to the viewport so tooltips never clip off the narrow side panel, and flips above/below as room allows.
+- **Per-section "ⓘ" explainers.** Every section header — Page Performance, Chronic Strain, Likely Heavy Tabs, Duplicate Tabs, Idle Tabs, Crowded Domains, Extensions, and the Current Tab card — gets a small info button that pops a card explaining *what the section is* and *how to read its rows* (e.g. that "Likely Heavy Tabs" is a heuristic estimate, what "blocking ms" means, why chronic strain differs from live perf).
+- **New shared modules.** `explainers.js` holds all the help copy in one place; `info-layer.js` is the floating controller for both the tooltip and the pop-up. The layer is appended to `<body>`, **not** into `#content`, so the 5s live re-render never wipes it mid-read — the same reason `deep-result` / `ai-card` live outside `#content`. Hover uses document-level event delegation so it keeps working across re-renders; the pop-up floats independently once opened and isn't tied to the header button (which gets replaced on the next scan). Keyboard-accessible (focus shows tooltips, Esc closes the pop-up) and CSP-safe (no inline handlers; the pop-up renders only trusted static strings).
+
+### Gauges — system vs. Chrome
+- **`MEM` / `CPU` relabeled `SYS MEM` / `SYS CPU`.** These read `chrome.system.memory` and `chrome.system.cpu`, which report **whole-machine** totals across every process — not Chrome's slice. The labels (and their tooltips) now say so explicitly, so the numbers can't be mistaken for Chrome's footprint. Widened the gauge label column to fit.
+- **New `JS HEAP` gauge.** Sums the per-renderer JS heap the in-page probe already reports (`usedJSHeapSize`) across tabs with a fresh reading, shown as a share of system RAM so it sits on the same scale as `SYS MEM`. This is the one **Chrome-attributable** memory figure obtainable without attaching the debugger. It's hidden until the probe has reported (no misleading hollow `0`), and its tooltip is explicit that it's **partial** — JS-heap only, excludes the browser/GPU processes and non-JS memory, and same-origin tabs sharing a renderer can be double-counted. Added a `chromeHeap` field (`{ mb, tabs, pct }`) to the `analyze()` summary; computed in the existing per-tab perf loop so it costs nothing extra.
+
 ## v0.2.4 — 2026-06-12
 
 Fourth efficiency phase — cuts Vantage's own runtime footprint, especially the in-page probe that runs in every tab. A performance monitor should be featherweight in the pages it watches; this makes it markedly lighter. The probe's report contract (a compact payload every 5s) is unchanged, so nothing downstream had to change. Verified the batched store writer against a stubbed `chrome.storage` (correct live/history folding, EMA, heap series, opaque-origin skip, single write per batch).

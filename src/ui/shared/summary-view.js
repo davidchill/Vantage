@@ -5,6 +5,7 @@
 
 import { collectSnapshot, sampleCpuPercent } from "../../core/collector.js";
 import { analyze } from "../../core/analyzer.js";
+import { READOUT_TIPS, GAUGE_TIPS, VERDICT_TIP } from "./explainers.js";
 
 /** Escape untrusted text (tab titles/URLs are page-controlled). */
 function esc(str) {
@@ -32,8 +33,9 @@ function formatIdle(min) {
   return `${Math.floor(min / 60)}h idle`;
 }
 
-export function readout(value, label, hot = false) {
-  return `<div class="readout"><span class="rv${hot ? " hot" : ""}">${value}</span><span class="rl">${label}</span></div>`;
+export function readout(value, label, hot = false, tip = "") {
+  const tipAttr = tip ? ` data-tip="${esc(tip)}" tabindex="0"` : "";
+  return `<div class="readout"${tipAttr}><span class="rv${hot ? " hot" : ""}">${value}</span><span class="rl">${label}</span></div>`;
 }
 
 /** Expandable detail: optional URL line, a key/value grid, and a bullet list. */
@@ -80,6 +82,7 @@ function section(id, title, rows, emptyMsg, slot = "", collapsed) {
       <span class="caret sec-caret">›</span>
       <span class="sec-mark"></span>
       <span class="sec-title">${title}</span>
+      <button class="sec-info" data-info="${esc(id)}" title="What is this?" aria-label="About this section">i</button>
       ${count}
       ${slot && rows.length ? `<span class="sec-slot">${slot}</span>` : ""}
     </div>`;
@@ -223,7 +226,7 @@ export function renderSummary(
       : `<span class="token">all systems nominal</span>`;
   const verdict = health
     ? `<div class="verdict v-${health.level.toLowerCase()}">
-        <div class="verdict-label">System Status</div>
+        <div class="verdict-label" data-tip="${esc(VERDICT_TIP)}" tabindex="0">System Status</div>
         <div class="verdict-word">${health.level}</div>
         <div class="signal"><span style="width:${signalPct}%"></span></div>
         <div class="tokens">${tokens}</div>
@@ -233,34 +236,46 @@ export function renderSummary(
   // ── Metric cluster ──────────────────────────────────────────────────────
   const cluster =
     `<div class="cluster">` +
-    readout(totals.tabs, "tabs") +
-    readout(totals.windows, "windows") +
-    readout(totals.sleeping, "sleeping") +
-    readout(totals.audible, "audio", totals.audible > 0) +
-    readout(duplicates.length, "dupe sets", duplicates.length > 0) +
-    readout(idleTabs.length, "idle", idleTabs.length > 0) +
+    readout(totals.tabs, "tabs", false, READOUT_TIPS.tabs) +
+    readout(totals.windows, "windows", false, READOUT_TIPS.windows) +
+    readout(totals.sleeping, "sleeping", false, READOUT_TIPS.sleeping) +
+    readout(totals.audible, "audio", totals.audible > 0, READOUT_TIPS.audio) +
+    readout(duplicates.length, "dupe sets", duplicates.length > 0, READOUT_TIPS["dupe sets"]) +
+    readout(idleTabs.length, "idle", idleTabs.length > 0, READOUT_TIPS.idle) +
     readout(
       (summary.performance?.chronic || []).length,
       "chronic",
-      (summary.performance?.chronic || []).length > 0
+      (summary.performance?.chronic || []).length > 0,
+      READOUT_TIPS.chronic
     ) +
     `</div>`;
 
   // ── Telemetry gauges ────────────────────────────────────────────────────
-  const memGauge = `<div class="gauge">
-      <span class="gl">MEM</span>
+  const memGauge = `<div class="gauge" data-tip="${esc(GAUGE_TIPS.MEM)}" tabindex="0">
+      <span class="gl">SYS MEM</span>
       <span class="track ${trackClass(memory.usedPercent)}"><span style="width:${memory.usedPercent}%"></span></span>
       <span class="gv">${memory.usedPercent}% · ${fmtBytes(memory.usedBytes)}/${fmtBytes(memory.capacityBytes)}</span>
     </div>`;
   const cpuGauge =
     cpuPercent == null
       ? ""
-      : `<div class="gauge">
-          <span class="gl">CPU</span>
+      : `<div class="gauge" data-tip="${esc(GAUGE_TIPS.CPU)}" tabindex="0">
+          <span class="gl">SYS CPU</span>
           <span class="track ${trackClass(cpuPercent)}"><span style="width:${cpuPercent}%"></span></span>
           <span class="gv">${cpuPercent}%</span>
         </div>`;
-  const gauges = `<div class="gauges">${memGauge}${cpuGauge}</div>`;
+  // Measured Chrome JS-heap footprint — only shown once the probe has reported
+  // for at least one tab (otherwise it'd read a misleading 0).
+  const heap = summary.chromeHeap;
+  const heapGauge =
+    !heap || heap.tabs === 0
+      ? ""
+      : `<div class="gauge" data-tip="${esc(GAUGE_TIPS.HEAP)}" tabindex="0">
+          <span class="gl">JS HEAP</span>
+          <span class="track ${trackClass(heap.pct)}"><span style="width:${Math.min(heap.pct, 100)}%"></span></span>
+          <span class="gv">${heap.mb.toLocaleString()}M · ${heap.tabs} tab${heap.tabs === 1 ? "" : "s"}</span>
+        </div>`;
+  const gauges = `<div class="gauges">${memGauge}${cpuGauge}${heapGauge}</div>`;
 
   // ── Page performance (worst-first) ──────────────────────────────────────
   const perf = summary.performance;

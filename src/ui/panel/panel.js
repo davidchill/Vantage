@@ -14,6 +14,7 @@ import {
 import { initAutomationUI } from "./automation-ui.js";
 import { initCurrentTabUI } from "./current-tab-ui.js";
 import { initAIUI } from "./ai-ui.js";
+import { initInfoLayer } from "../shared/info-layer.js";
 
 const content = document.getElementById("content");
 const refreshBtn = document.getElementById("refresh");
@@ -125,6 +126,10 @@ content.addEventListener(
 // Tab actions, via event delegation on the container so the handler survives
 // the periodic innerHTML re-renders. Each button carries data-act (+ ids).
 content.addEventListener("click", async (e) => {
+  // Section "ⓘ" button — handled by the floating info layer (info-layer.js),
+  // not here. Bail out so it doesn't fall through to the collapse toggle below.
+  if (e.target.closest("button[data-info]")) return;
+
   // Section sort control — cycle to the next option and re-render in place.
   const sortBtn = e.target.closest("button[data-sort]");
   if (sortBtn) {
@@ -198,6 +203,11 @@ initCurrentTabUI();
 // AI analysis card: on-demand Claude read of the latest scan. Hand it an accessor
 // for `last` so the button always analyzes the freshest data.
 initAIUI(() => last);
+
+// Floating help layer: hover tooltips on telemetry items + the per-section "ⓘ"
+// explainer pop-ups. Self-managing via document-level delegation, so it keeps
+// working across the live re-render.
+initInfoLayer();
 
 // Live monitoring: re-scan periodically while the panel is open. The interval
 // is paused when the panel is hidden so we're not sampling CPU needlessly.

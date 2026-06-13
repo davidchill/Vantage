@@ -2,7 +2,7 @@
 
 A live **performance console** for Chrome. Vantage runs as an always-on background monitor over your tabs, extensions, cookies/trackers, and the browser's resource usage, then diagnoses what's slowing Chrome down — all in a dark, monospace, instrument-grade side panel.
 
-> **Status:** v0.2.4 — monitoring & diagnosis, a per-site privacy inspector, opt-in rule-based auto-management, long-term strain tracking, and an optional AI analysis. Still pre-1.0 and evolving.
+> **Status:** v0.2.5 — monitoring & diagnosis, a per-site privacy inspector, opt-in rule-based auto-management, long-term strain tracking, an optional AI analysis, and in-context help throughout. Still pre-1.0 and evolving.
 
 ---
 
@@ -40,8 +40,9 @@ A single **Good / Strained / Heavy** verdict at the top of the panel, synthesize
 ### Tab telemetry
 Totals (tabs, windows, sleeping, audible, pinned, muted, loading), **duplicate-tab sets**, **idle tabs** (untouched 60 min+), and **crowded domains** (one site hogging many tabs).
 
-### System gauges
-Live **memory** and **CPU** usage. CPU is sampled over a short interval (two readings of the cumulative per-core tick counters) since a single reading is meaningless.
+### System & Chrome gauges
+- **`SYS MEM` / `SYS CPU`** — whole-machine memory and CPU usage (`chrome.system.memory` / `chrome.system.cpu`), across every process, not Chrome's slice. The labels and tooltips say so explicitly so the numbers aren't mistaken for Chrome's footprint. CPU is sampled over a short interval (two readings of the cumulative per-core tick counters) since a single reading is meaningless.
+- **`JS HEAP`** — the one **Chrome-attributable** memory figure obtainable without attaching the debugger: the per-renderer JS heap (`usedJSHeapSize`) the in-page probe already reports, summed across measured tabs and shown as a share of system RAM. Deliberately partial — JS-heap only, excludes the browser/GPU processes and non-JS memory, and same-origin tabs sharing a renderer can be double-counted — and labeled as such. Hidden until the probe has reported.
 
 ### Page-performance engine
 An in-page probe reads each page's **own** Performance APIs — no DevTools banner — and reports compact metrics every 5s:
@@ -78,6 +79,8 @@ Per-tab **sleep** (`tabs.discard`) and **close**, plus bulk **sleep all idle** a
 
 ### The UI
 A **dark, monospace, "observability console"** side panel: command-bar header with a live indicator, health-verdict hero, hairline metric cluster, segmented telemetry bars, and log-style sections. Every row **expands** to a detail block; every section and the AI card **collapse** to keep a data-dense panel navigable. Expand / collapse / sort state all survive the 5s live refresh. Blueprint-grid atmosphere, motion confined to the shell so the refresh never flickers, and `prefers-reduced-motion` honored.
+
+**In-context help.** The dense readouts explain themselves on demand: telemetry items (the metric cluster, the gauges, the System Status verdict, and the Current-Tab readouts) show a one-line **tooltip** on hover or focus, and every section header carries a small **"ⓘ" button** that pops a card describing what the section is and how to read its rows. The whole help layer floats over the panel rather than living inside the live-refreshed content, so it never flickers or vanishes mid-read, and it's keyboard-accessible.
 
 ---
 
@@ -120,7 +123,8 @@ src/
   ui/
     panel/                    panel.html + panel.js, plus self-contained cards:
                               automation-ui.js, current-tab-ui.js, ai-ui.js
-    shared/                   summary-view.js (rendering) + summary.css (theme)
+    shared/                   summary-view.js (rendering) + summary.css (theme),
+                              explainers.js (help copy) + info-layer.js (tooltips / "ⓘ" pop-ups)
 ```
 
 **Data flow:** the content-script probe reports per-tab metrics → the service worker folds them into live + per-origin + strain stores → on each scan `collectSnapshot()` gathers Chrome state + the perf stores → `analyze()` turns it into a summary → the panel renders it and re-renders live every 5s. Automation and AI both consume that same summary.
@@ -196,5 +200,6 @@ Requires **Chrome 121+**. Page-performance data appears as you browse (the probe
 | Version | Focus |
 | ------- | ----- |
 | 0.1.0 | Monitoring, diagnosis, cleanup actions, console UI (initial release). |
-| 0.2.0 | Current-Tab inspector, auto-management, chronic-strain tracking, AI analysis, collapsible UI (this release). |
+| 0.2.0 | Current-Tab inspector, auto-management, chronic-strain tracking, AI analysis, collapsible UI. |
+| 0.2.x | Efficiency passes (lighter probe, batched writes, cached reads), plus QoL: in-context tooltips & per-section explainers, system-vs-Chrome gauge clarity, and a measured `JS HEAP` gauge (this release). |
 | Later | Cross-session persistence for UI state, a chronic-strain automation trigger, extension enable/disable, a custom toolbar icon, optional inner-scroll cap on long AI results. |
