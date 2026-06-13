@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.2.4 — 2026-06-12
+
+Fourth efficiency phase — cuts Vantage's own runtime footprint, especially the in-page probe that runs in every tab. A performance monitor should be featherweight in the pages it watches; this makes it markedly lighter. The probe's report contract (a compact payload every 5s) is unchanged, so nothing downstream had to change. Verified the batched store writer against a stubbed `chrome.storage` (correct live/history folding, EMA, heap series, opaque-origin skip, single write per batch).
+
+### Probe (per-tab cost)
+- **Resource timing accumulated incrementally.** A `resource` `PerformanceObserver` now tallies request count, transferred bytes, and contacted hosts as entries arrive, instead of re-scanning the whole (ever-growing) resource buffer on every 5s report (`perf-probe.js`). On a busy SPA that buffer holds thousands of entries; re-walking it each tick is gone.
+  - Side benefit — **higher fidelity for the Current Tab inspector**: the host list is now cumulative over the page's life, so it catches trackers that loaded early even after the browser's ~250-entry resource buffer rotates (the old `getEntriesByType` scan silently missed those). Request count and transfer size become cumulative totals for the same reason.
+- **DOM-node count throttled.** The full-tree `getElementsByTagName("*")` walk now samples ~every 30s and only while the tab is visible (it can't visibly change while hidden), reporting the last value in between. A never-seen background tab reports no node count rather than being walked.
+- Navigation-timing load duration is read once and cached rather than re-read every report.
+
+### Service worker (storage I/O)
+- **Batched perf-report writes.** Reports from many tabs arrive staggered; the worker now buffers them and folds the whole batch into storage in one read-modify-write per store (1.5s debounce, early flush on bursts), replacing the per-message write chain (`service-worker.js`, `perf-store.js`). Storage ops drop from O(reports) to O(flush intervals).
+
+### Panel (render path)
+- **CPU sample cached (~15s).** Sampling system CPU costs a forced ~300ms (two tick-counter reads an interval apart); the panel no longer pays that on every 5s render, reusing the cached value between samples (`summary-view.js`). The machine-wide CPU gauge now updates ~every 15s.
+
 ## v0.2.3 — 2026-06-12
 
 Third efficiency phase — tightens the analyzer (`analyze()`, the per-scan "brain"). No behavior change; the summary it returns is identical, verified by running `analyze()` against a synthetic snapshot and asserting on every section (health, duplicates, heavy tabs, background drain, leaks, predictions, chronic strain, extension classification).

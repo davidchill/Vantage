@@ -4,10 +4,15 @@
 
 import { collectSnapshot } from "../core/collector.js";
 import { analyze } from "../core/analyzer.js";
-import { recordPerfReport, dropLiveTab } from "../core/perf-store.js";
+import { recordPerfReports, dropLiveTab } from "../core/perf-store.js";
 import { recordStrain } from "../core/strain-history.js";
 import { runAutomation } from "../core/automation.js";
-import { ALARM_NAME, SCAN_INTERVAL_MINUTES } from "../core/constants.js";
+import {
+  ALARM_NAME,
+  SCAN_INTERVAL_MINUTES,
+  PERF_FLUSH_MS,
+  PERF_FLUSH_MAX_BATCH,
+} from "../core/constants.js";
 
 // Rebuild the summary and reflect it on the toolbar badge. The panel renders from
 // its own scan, so there's nothing to cache here — the badge is the only consumer.
@@ -84,13 +89,27 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   scheduleScan();
 });
 
-// Perf reports arrive from many tabs; serialize the read-modify-write of
-// storage through one chain so concurrent reports don't clobber each other.
-let perfWriteChain = Promise.resolve();
+// Perf reports arrive every 5s from each open tab, staggered so many land within a
+// second of each other. Buffer them and fold the whole batch into storage in one
+// read-modify-write per flush, instead of one write per message. A short debounce
+// keeps the live data fresh for the panel; a burst that fills the buffer flushes
+// early so it never grows unbounded.
+const perfBuffer = [];
+let perfFlushTimer = null;
+
+function flushPerfReports() {
+  clearTimeout(perfFlushTimer);
+  perfFlushTimer = null;
+  const batch = perfBuffer.splice(0);
+  if (batch.length) {
+    recordPerfReports(batch).catch((err) => console.warn("perf record failed:", err));
+  }
+}
+
 function queuePerfReport(tabId, data) {
-  perfWriteChain = perfWriteChain
-    .then(() => recordPerfReport(tabId, data, Date.now()))
-    .catch((err) => console.warn("perf record failed:", err));
+  perfBuffer.push({ tabId, data, ts: Date.now() });
+  if (perfBuffer.length >= PERF_FLUSH_MAX_BATCH) flushPerfReports();
+  else if (perfFlushTimer == null) perfFlushTimer = setTimeout(flushPerfReports, PERF_FLUSH_MS);
 }
 
 /**

@@ -437,6 +437,21 @@ export function renderSummary(
   }
 }
 
+// System CPU is a slow-moving, machine-wide gauge, and sampling it costs a forced
+// ~300ms (two reads of the cumulative tick counters, an interval apart). Sample it
+// at most once per CPU_SAMPLE_TTL_MS; intervening renders reuse the cached value
+// rather than stalling every 5s tick on a fresh sample.
+let cpuCache = { value: null, at: 0 };
+const CPU_SAMPLE_TTL_MS = 15000;
+
+async function getCpuPercent() {
+  const now = Date.now();
+  if (cpuCache.at && now - cpuCache.at < CPU_SAMPLE_TTL_MS) return cpuCache.value;
+  const value = await sampleCpuPercent().catch(() => null);
+  cpuCache = { value, at: now };
+  return value;
+}
+
 /**
  * Scan + analyze + render in one call. Returns the data so the caller can
  * re-render instantly (e.g. on expand/collapse) without another scan.
@@ -449,7 +464,7 @@ export async function runAndRender(
 ) {
   const [snapshot, cpuPercent] = await Promise.all([
     collectSnapshot(),
-    sampleCpuPercent().catch(() => null),
+    getCpuPercent(),
   ]);
   const summary = analyze(snapshot);
   renderSummary(contentEl, summary, cpuPercent, expanded, sortState, collapsed);

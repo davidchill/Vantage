@@ -1,6 +1,6 @@
 // Shared configuration for the monitoring core.
 // manifest.json is the canonical version for Chrome; keep VERSION in sync with it.
-export const VERSION = "0.2.3";
+export const VERSION = "0.2.4";
 
 // A tab not accessed in this many minutes is flagged as "idle".
 export const IDLE_MINUTES = 60;
@@ -16,6 +16,12 @@ export const SCAN_INTERVAL_MINUTES = 1;
 // Storage keys for the perf engine (see perf-store.js).
 export const PERF_LIVE_KEY = "perfLive"; // storage.session: { [tabId]: report }
 export const PERF_HISTORY_KEY = "perfHistory"; // storage.local: { [origin]: stats }
+
+// Perf reports arrive every 5s from each open tab, staggered. The worker buffers
+// them briefly and folds the whole batch into storage in one read-modify-write,
+// instead of one write per message. Flush early if a burst fills the buffer.
+export const PERF_FLUSH_MS = 1500;
+export const PERF_FLUSH_MAX_BATCH = 25;
 
 // Main-thread blocking (ms per reporting window) at/above which we call a page
 // "heavy" — both for live warnings and for the per-origin prediction threshold.

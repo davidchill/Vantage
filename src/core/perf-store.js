@@ -22,13 +22,8 @@ function ema(prev, x) {
   return Math.round(prev * (1 - PERF_HISTORY_ALPHA) + x * PERF_HISTORY_ALPHA);
 }
 
-/** Fold one content-script report into the live + history stores. */
-export async function recordPerfReport(tabId, data, now) {
-  // --- live per-tab snapshot (with a downsampled heap series for leak detection) ---
-  const liveWrap = await chrome.storage.session.get(PERF_LIVE_KEY);
-  const live = liveWrap[PERF_LIVE_KEY] || {};
-  const prevLive = live[tabId];
-
+/** Append one report to a tab's live entry, maintaining the downsampled heap series. */
+function foldLive(prevLive, data, now) {
   let heapSeries = (prevLive && prevLive.heapSeries) || [];
   if (data.jsHeapMB != null) {
     const last = heapSeries[heapSeries.length - 1];
@@ -39,18 +34,12 @@ export async function recordPerfReport(tabId, data, now) {
       }
     }
   }
+  return { ...data, ts: now, heapSeries };
+}
 
-  live[tabId] = { ...data, tabId, ts: now, heapSeries };
-  await chrome.storage.session.set({ [PERF_LIVE_KEY]: live });
-
-  // --- per-origin rolling history (skip opaque origins) ---
-  if (!data.origin || data.origin === "null") return;
-
-  const histWrap = await chrome.storage.local.get(PERF_HISTORY_KEY);
-  const history = histWrap[PERF_HISTORY_KEY] || {};
-  const prev = history[data.origin];
-
-  history[data.origin] = prev
+/** Fold one report into an origin's rolling per-origin history record. */
+function foldHistory(prev, data, now) {
+  return prev
     ? {
         avgBlockingMs: ema(prev.avgBlockingMs, data.blockingMs),
         avgJsHeapMB:
@@ -72,9 +61,42 @@ export async function recordPerfReport(tabId, data, now) {
         samples: 1,
         lastSeen: now,
       };
+}
 
-  pruneHistory(history);
-  await chrome.storage.local.set({ [PERF_HISTORY_KEY]: history });
+/**
+ * Fold a batch of content-script reports into the live + history stores with a
+ * single read-modify-write of each store, no matter how many reports are in the
+ * batch. Each entry is { tabId, data, ts }; entries are folded in arrival order.
+ */
+export async function recordPerfReports(reports) {
+  if (!reports.length) return;
+
+  const [liveWrap, histWrap] = await Promise.all([
+    chrome.storage.session.get(PERF_LIVE_KEY),
+    chrome.storage.local.get(PERF_HISTORY_KEY),
+  ]);
+  const live = liveWrap[PERF_LIVE_KEY] || {};
+  const history = histWrap[PERF_HISTORY_KEY] || {};
+  let historyTouched = false;
+
+  for (const { tabId, data, ts } of reports) {
+    live[tabId] = { ...foldLive(live[tabId], data, ts), tabId };
+
+    // Per-origin rolling history (skip opaque origins).
+    if (data.origin && data.origin !== "null") {
+      history[data.origin] = foldHistory(history[data.origin], data, ts);
+      historyTouched = true;
+    }
+  }
+
+  if (historyTouched) pruneHistory(history);
+
+  await Promise.all([
+    chrome.storage.session.set({ [PERF_LIVE_KEY]: live }),
+    historyTouched
+      ? chrome.storage.local.set({ [PERF_HISTORY_KEY]: history })
+      : Promise.resolve(),
+  ]);
 }
 
 /** Cap history size by evicting the least-recently-seen origins. */

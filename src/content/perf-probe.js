@@ -72,6 +72,46 @@
     /* unsupported */
   }
 
+  // Resource timing — accumulated incrementally as entries arrive, rather than
+  // re-scanning the whole (ever-growing) resource buffer on every report. Count and
+  // bytes are cumulative over the page's life; hosts is the unique set of cross-host
+  // endpoints the page contacted (hostnames only — the raw material the panel
+  // classifies into ads/trackers — capped to keep the payload small). buffered:true
+  // replays the entries that loaded before this observer registered.
+  let resourceCount = 0;
+  let transferBytes = 0;
+  const resourceHosts = new Set();
+  const selfHost = location.hostname;
+  try {
+    new PerformanceObserver((list) => {
+      for (const r of list.getEntries()) {
+        resourceCount++;
+        transferBytes += r.transferSize || 0;
+        if (resourceHosts.size < 200) {
+          try {
+            const h = new URL(r.name).hostname;
+            if (h && h !== selfHost) resourceHosts.add(h);
+          } catch {
+            /* non-URL resource name */
+          }
+        }
+      }
+    }).observe({ type: "resource", buffered: true });
+  } catch {
+    /* Resource Timing API unsupported here */
+  }
+
+  // DOM node count is a full-tree walk — comparatively expensive — so sample it on a
+  // slower cadence (every DOM_SAMPLE_EVERY reports) and never while hidden, where it
+  // can't visibly change. Between samples we report the last value.
+  let domNodes = null;
+  let domTick = 0;
+  const DOM_SAMPLE_EVERY = 6; // ~30s at the 5s report cadence
+
+  // Navigation timing's load duration is fixed once the page finishes loading, so
+  // read it only until it's known, then stop touching the navigation entry.
+  let loadMs = null;
+
   function buildReport() {
     let jsHeapMB = null;
     const mem = performance.memory; // Chrome-only; coarse/quantized but useful.
@@ -79,38 +119,23 @@
       jsHeapMB = Math.round(mem.usedJSHeapSize / 1048576);
     }
 
-    let resourceCount = 0;
-    let transferBytes = 0;
-    // Unique cross-host endpoints this page contacted — the raw material the
-    // panel classifies into ads/trackers. We send hostnames only (not full URLs)
-    // and exclude our own host, keeping the payload small.
-    const hosts = new Set();
-    const selfHost = location.hostname;
-    try {
-      const res = performance.getEntriesByType("resource");
-      resourceCount = res.length;
-      for (const r of res) {
-        transferBytes += r.transferSize || 0;
-        if (hosts.size < 200) {
-          try {
-            const h = new URL(r.name).hostname;
-            if (h && h !== selfHost) hosts.add(h);
-          } catch {
-            /* non-URL resource name */
-          }
-        }
-      }
-    } catch {
-      /* ignore */
+    // Re-walk the DOM only on a sampled tick, and only while the tab is visible.
+    domTick++;
+    if (
+      document.visibilityState !== "hidden" &&
+      (domNodes == null || domTick >= DOM_SAMPLE_EVERY)
+    ) {
+      domNodes = document.getElementsByTagName("*").length;
+      domTick = 0;
     }
 
-    // Navigation timing: page load duration.
-    let loadMs = null;
-    try {
-      const nav = performance.getEntriesByType("navigation")[0];
-      if (nav && nav.loadEventEnd > 0) loadMs = Math.round(nav.loadEventEnd);
-    } catch {
-      /* ignore */
+    if (loadMs == null) {
+      try {
+        const nav = performance.getEntriesByType("navigation")[0];
+        if (nav && nav.loadEventEnd > 0) loadMs = Math.round(nav.loadEventEnd);
+      } catch {
+        /* ignore */
+      }
     }
 
     return {
@@ -120,10 +145,10 @@
       blockingMs: Math.round(blockingMs),
       blockingHiddenMs: Math.round(blockingHiddenMs),
       jsHeapMB,
-      domNodes: document.getElementsByTagName("*").length,
+      domNodes,
       resourceCount,
       transferMB: +(transferBytes / 1048576).toFixed(1),
-      resourceHosts: [...hosts],
+      resourceHosts: [...resourceHosts],
       lcpMs,
       cls: +cls.toFixed(3),
       inpMs: inpMs || null,
