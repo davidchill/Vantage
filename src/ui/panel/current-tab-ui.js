@@ -22,6 +22,36 @@ let expanded = false; // detail (domain + cookie lists) open?
 let lastUrl = null; // collapse detail automatically when the tab changes
 let busy = false; // guard against overlapping renders
 
+// Cookie queries are comparatively expensive — summarizeSiteCookies plus up to ~25
+// chrome.cookies.getAll calls for the tracker probe. The cookie picture only changes
+// on navigation, reload, or an explicit clear, NOT on the 5s heartbeat. So we cache
+// the results: the idle refresh just recomputes the (in-memory) tracker view and
+// reuses the cached cookies, while tab switches / reloads / clears invalidate the
+// cache to force a fresh read. First-party cookies key on the url; tracker cookies
+// key on the exact set of tracker domains queried (which grows as the probe reports).
+let cookieCache = { url: null, summary: null };
+let trackerCookieCache = { key: null, summary: null };
+
+function invalidateCookieCache() {
+  cookieCache = { url: null, summary: null };
+  trackerCookieCache = { key: null, summary: null };
+}
+
+async function cookiesFor(url) {
+  if (cookieCache.url === url) return cookieCache.summary;
+  const summary = await summarizeSiteCookies(url);
+  cookieCache = { url, summary };
+  return summary;
+}
+
+async function trackerCookiesFor(domains) {
+  const key = [...domains].sort().join(",");
+  if (trackerCookieCache.key === key) return trackerCookieCache.summary;
+  const summary = await trackerCookieSummary(domains);
+  trackerCookieCache = { key, summary };
+  return summary;
+}
+
 /** The active tab in the user's focused window. */
 async function activeTab() {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -112,8 +142,8 @@ async function render() {
 
     const hosts = await resourceHostsFor(tab.id);
     const trackers = analyzeTrackers(hosts || [], tab.url);
-    const cookies = await summarizeSiteCookies(tab.url);
-    const trackerCookies = await trackerCookieSummary(
+    const cookies = await cookiesFor(tab.url);
+    const trackerCookies = await trackerCookiesFor(
       trackers.trackerDomains.map((d) => d.domain)
     );
 
@@ -152,6 +182,7 @@ card.addEventListener("click", async (e) => {
     if (tab && confirm(`Delete all cookies for ${tab.url ? new URL(tab.url).hostname : "this site"}?`)) {
       const n = await clearSiteCookies(tab.url);
       console.info(`Vantage: cleared ${n} cookie(s)`);
+      invalidateCookieCache(); // cookies just changed — force a fresh read
       render();
     }
     return;
@@ -162,10 +193,18 @@ card.addEventListener("click", async (e) => {
   }
 });
 
-// Re-render promptly when the user switches or reloads tabs.
-chrome.tabs.onActivated.addListener(() => render());
+// Re-render promptly when the user switches or reloads tabs. Both are points where
+// cookies may have changed (different site, or a reload of the same url), so drop
+// the cookie cache before re-reading. The plain 5s heartbeat keeps the cache.
+chrome.tabs.onActivated.addListener(() => {
+  invalidateCookieCache();
+  render();
+});
 chrome.tabs.onUpdated.addListener((_id, info, tab) => {
-  if (tab.active && (info.status === "complete" || info.url)) render();
+  if (tab.active && (info.status === "complete" || info.url)) {
+    invalidateCookieCache();
+    render();
+  }
 });
 
 /** Start the inspector: paint now, then keep it fresh on a gentle interval. */

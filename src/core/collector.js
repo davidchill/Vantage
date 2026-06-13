@@ -39,13 +39,31 @@ export async function collectSnapshot() {
  * the stable channel, so this is an inventory — resource impact is inferred
  * from permission breadth in the analyzer, not measured.
  */
+// chrome.management.getAll() enumerates every installed extension on each call.
+// The installed set changes only on install / uninstall / enable / disable — never
+// on the panel's 5s refresh — so cache the built list and invalidate on those
+// events. (Per-extension permission warnings are already cached by id@version; this
+// caches the enumeration on top.) The cache lives per execution context — the
+// service worker and the panel each keep and invalidate their own.
+let extCache = null;
+function invalidateExtCache() {
+  extCache = null;
+}
+if (chrome.management?.onInstalled) {
+  chrome.management.onInstalled.addListener(invalidateExtCache);
+  chrome.management.onUninstalled.addListener(invalidateExtCache);
+  chrome.management.onEnabled.addListener(invalidateExtCache);
+  chrome.management.onDisabled.addListener(invalidateExtCache);
+}
+
 export async function collectExtensions() {
   if (!chrome.management?.getAll) return [];
+  if (extCache) return extCache;
   try {
     const all = await chrome.management.getAll();
     const selfId = chrome.runtime.id;
     const exts = all.filter((e) => e.type === "extension" && e.id !== selfId);
-    return Promise.all(
+    extCache = await Promise.all(
       exts.map(async (e) => ({
         id: e.id,
         name: e.name,
@@ -60,6 +78,7 @@ export async function collectExtensions() {
         permissionWarnings: await permissionWarningsFor(e.id, e.version),
       }))
     );
+    return extCache;
   } catch {
     return [];
   }

@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.2.2 — 2026-06-12
+
+Second efficiency phase — cuts redundant work from the always-on live loop. No user-facing behavior change; the same data is shown, just without the wasted queries each 5s tick.
+
+### Current Tab inspector — cached cookie reads
+- The inspector's 5s heartbeat no longer re-runs the cookie queries when nothing changed. Cookie lookups (`summarizeSiteCookies` plus **up to ~25 `chrome.cookies.getAll` calls** for the per-tracker probe) are now cached — first-party cookies keyed by url, tracker cookies keyed by the exact set of tracker domains queried (`current-tab-ui.js`).
+- The cache is invalidated precisely when cookies can actually change: **tab switch**, **reload / navigation**, and **clear cookies**. The idle refresh keeps the cache; tab events and clears force a fresh read.
+- The tracker counts (ads / trackers / third-parties) still recompute every tick from the probe's growing host list — only the cookie-store lookups are cached — so the card still fills in live as a page loads.
+
+### Extensions inventory — event-driven enumeration
+- `collectExtensions()` now caches the built extension list and only re-enumerates (`chrome.management.getAll()`) when an extension is **installed, uninstalled, enabled, or disabled** (`collector.js`). Previously it re-enumerated on every scan — every 5s from the panel and every minute from the worker.
+- The cache lives per execution context (service worker and panel each keep/invalidate their own); the list is read-only downstream, so the shared reference is safe. Per-extension permission warnings remain cached by `id@version` on top of this.
+- Tradeoff: `chrome.management` has no "updated" event, so a silent version auto-update of another extension may show stale version/warnings until the next install/enable/disable event or a context restart (the MV3 worker recycles on its own; the panel cache clears on close). Minor and bounded for a monitoring tool.
+
 ## v0.2.1 — 2026-06-12
 
 Internal cleanup pass — no user-facing behavior change. Removes dead code and wasted work uncovered in a full optimization review, the first of several efficiency phases.
