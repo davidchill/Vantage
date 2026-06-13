@@ -53,7 +53,6 @@ export async function recordPerfReport(tabId, data, now) {
   history[data.origin] = prev
     ? {
         avgBlockingMs: ema(prev.avgBlockingMs, data.blockingMs),
-        maxBlockingMs: Math.max(prev.maxBlockingMs, data.blockingMs),
         avgJsHeapMB:
           data.jsHeapMB != null ? ema(prev.avgJsHeapMB ?? data.jsHeapMB, data.jsHeapMB) : prev.avgJsHeapMB,
         avgLcpMs: ema(prev.avgLcpMs, data.lcpMs),
@@ -65,7 +64,6 @@ export async function recordPerfReport(tabId, data, now) {
       }
     : {
         avgBlockingMs: data.blockingMs,
-        maxBlockingMs: data.blockingMs,
         avgJsHeapMB: data.jsHeapMB,
         avgLcpMs: data.lcpMs ?? null,
         avgInpMs: data.inpMs ?? null,

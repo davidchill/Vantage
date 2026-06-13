@@ -7,16 +7,19 @@ import { analyze } from "../core/analyzer.js";
 import { recordPerfReport, dropLiveTab } from "../core/perf-store.js";
 import { recordStrain } from "../core/strain-history.js";
 import { runAutomation } from "../core/automation.js";
-import {
-  ALARM_NAME,
-  SCAN_INTERVAL_MINUTES,
-  SESSION_KEY,
-} from "../core/constants.js";
+import { ALARM_NAME, SCAN_INTERVAL_MINUTES } from "../core/constants.js";
 
-async function scan() {
+// Rebuild the summary and reflect it on the toolbar badge. The panel renders from
+// its own scan, so there's nothing to cache here — the badge is the only consumer.
+//
+// `automate` runs the once-per-authoritative-scan side effects (strain ledger +
+// rule-based auto-management). It's turned off for the follow-up re-scan after
+// automation acts, so those side effects fire exactly once per real scan, never on
+// the corrective re-scan (which would double-count strain or re-trigger automation).
+async function scan({ automate = true } = {}) {
   const summary = analyze(await collectSnapshot());
-  await chrome.storage.session.set({ [SESSION_KEY]: summary });
   updateBadge(summary);
+  if (!automate) return summary;
 
   // Fold this scan's strained origins into the persistent chronic-strain ledger.
   // Done here (once per authoritative scan), never on the panel's 5s re-render,
@@ -30,23 +33,16 @@ async function scan() {
 
   // Rule-based auto-management: act on tabs that have been strained too long.
   // No-op unless the user has enabled it in settings. Isolated so a failure here
-  // never breaks the monitoring scan itself.
+  // never breaks the monitoring scan itself. After it acts the badge is stale, so
+  // re-scan once without re-running automation to reflect the new tab state.
   try {
     const acted = await runAutomation(summary, summary.takenAt);
-    if (acted.length) await scanAfterAutomation();
+    if (acted.length) await scan({ automate: false });
   } catch (err) {
     console.warn("automation run failed:", err);
   }
 
   return summary;
-}
-
-// After automation sleeps/closes tabs, the cached summary is stale. Re-scan once
-// (without re-running automation) so the badge and panel reflect the new state.
-async function scanAfterAutomation() {
-  const summary = analyze(await collectSnapshot());
-  await chrome.storage.session.set({ [SESSION_KEY]: summary });
-  updateBadge(summary);
 }
 
 function updateBadge(summary) {

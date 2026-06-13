@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.2.1 — 2026-06-12
+
+Internal cleanup pass — no user-facing behavior change. Removes dead code and wasted work uncovered in a full optimization review, the first of several efficiency phases.
+
+### Removed
+- **Write-only summary cache.** The service worker wrote the full analyzed summary to `chrome.storage.session` (`latestSummary`) on every scan and every debounced tab event — a leftover from the old popup architecture that nothing read (the side panel runs its own scan). Removed both writes and the `SESSION_KEY` constant. The toolbar badge still updates from the in-memory summary.
+- **Dead stored fields.** Dropped three values that were persisted/transmitted but never read back: `maxBlockingMs` (per-origin history, `perf-store.js`), `lastKinds` (chronic-strain ledger, `strain-history.js`), and `ttfbMs` (probe report payload, `perf-probe.js`). Existing stored records shed these naturally — each record is fully rewritten on its next update.
+- **Unused `PERF_REPORT_INTERVAL_MS` constant** — only ever referenced in a comment; the probe hardcodes its own 5s cadence.
+
+### Refactored
+- Collapsed the duplicated `scanAfterAutomation()` into `scan({ automate })`. The post-automation corrective re-scan now calls `scan({ automate: false })`, so the strain-ledger update and auto-management still fire exactly once per authoritative scan (never on the re-scan) with no copy-pasted body.
+
 ## v0.2.0 — 2026-06-12
 
 Everything new since the initial release: a per-site privacy inspector, opt-in auto-management, long-term strain tracking, an optional AI read of the whole console, and a collapsible UI to keep it all navigable.

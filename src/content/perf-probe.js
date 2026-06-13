@@ -13,7 +13,7 @@
   // Only the top document reports, to avoid double-counting iframes.
   if (window.top !== window) return;
 
-  const REPORT_MS = 5000; // keep in sync with PERF_REPORT_INTERVAL_MS
+  const REPORT_MS = 5000; // probe report cadence (the panel re-renders on the same beat)
 
   // Windowed (reset each report)
   let longTasks = 0;
@@ -104,15 +104,11 @@
       /* ignore */
     }
 
-    // Navigation timing: load duration and time-to-first-byte.
+    // Navigation timing: page load duration.
     let loadMs = null;
-    let ttfbMs = null;
     try {
       const nav = performance.getEntriesByType("navigation")[0];
-      if (nav) {
-        if (nav.loadEventEnd > 0) loadMs = Math.round(nav.loadEventEnd);
-        if (nav.responseStart > 0) ttfbMs = Math.round(nav.responseStart);
-      }
+      if (nav && nav.loadEventEnd > 0) loadMs = Math.round(nav.loadEventEnd);
     } catch {
       /* ignore */
     }
@@ -132,7 +128,6 @@
       cls: +cls.toFixed(3),
       inpMs: inpMs || null,
       loadMs,
-      ttfbMs,
     };
   }
 

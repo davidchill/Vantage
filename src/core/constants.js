@@ -1,6 +1,6 @@
 // Shared configuration for the monitoring core.
 // manifest.json is the canonical version for Chrome; keep VERSION in sync with it.
-export const VERSION = "0.2.0";
+export const VERSION = "0.2.1";
 
 // A tab not accessed in this many minutes is flagged as "idle".
 export const IDLE_MINUTES = 60;
@@ -12,16 +12,10 @@ export const HEAVY_DOMAIN_TAB_COUNT = 4;
 export const ALARM_NAME = "optimizer-scan";
 export const SCAN_INTERVAL_MINUTES = 1;
 
-// Where the background worker caches the latest summary for UI surfaces to read.
-export const SESSION_KEY = "latestSummary";
-
 // --- Page-performance monitoring ---
 // Storage keys for the perf engine (see perf-store.js).
 export const PERF_LIVE_KEY = "perfLive"; // storage.session: { [tabId]: report }
 export const PERF_HISTORY_KEY = "perfHistory"; // storage.local: { [origin]: stats }
-
-// How often the in-page probe reports (mirror REPORT_MS in perf-probe.js).
-export const PERF_REPORT_INTERVAL_MS = 5000;
 
 // Main-thread blocking (ms per reporting window) at/above which we call a page
 // "heavy" — both for live warnings and for the per-origin prediction threshold.

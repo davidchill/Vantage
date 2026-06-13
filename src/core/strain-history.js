@@ -79,7 +79,6 @@ export async function recordStrain(summary, now) {
       streak,
       maxStreak: Math.max(prev?.maxStreak || 0, streak),
       kinds: kindCounts,
-      lastKinds: [...kinds],
     };
   }
 

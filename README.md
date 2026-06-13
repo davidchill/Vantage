@@ -2,7 +2,7 @@
 
 A live **performance console** for Chrome. Vantage runs as an always-on background monitor over your tabs, extensions, cookies/trackers, and the browser's resource usage, then diagnoses what's slowing Chrome down — all in a dark, monospace, instrument-grade side panel.
 
-> **Status:** v0.2.0 — monitoring & diagnosis, a per-site privacy inspector, opt-in rule-based auto-management, long-term strain tracking, and an optional AI analysis. Still pre-1.0 and evolving.
+> **Status:** v0.2.1 — monitoring & diagnosis, a per-site privacy inspector, opt-in rule-based auto-management, long-term strain tracking, and an optional AI analysis. Still pre-1.0 and evolving.
 
 ---
 
@@ -49,7 +49,7 @@ An in-page probe reads each page's **own** Performance APIs — no DevTools bann
 - **Live jank** — main-thread blocking happening *right now* (Long Tasks over the 50 ms budget).
 - **Background CPU drain** — tabs burning CPU while **hidden**. The worst kind of waste: you can't even see it. Held to a lower bar than foreground blocking.
 - **Memory-leak trends** — a downsampled per-tab JS-heap series flags steady climbers (e.g. +75 MB over 5 min+).
-- **Web Vitals** — LCP (load), INP (interaction latency), CLS (layout shift), plus load/TTFB.
+- **Web Vitals** — LCP (load), INP (interaction latency), CLS (layout shift), plus page load time.
 - **Predictions** — a persisted per-origin rolling average ("this site *tends* to be heavy / slow / laggy"), so a known-bad site is flagged the moment you open it, before it misbehaves again.
 
 ### Chronic Strain tracking
