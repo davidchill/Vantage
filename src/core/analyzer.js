@@ -29,24 +29,6 @@ function normalizeUrl(raw) {
   }
 }
 
-/** Friendly host for grouping; strips a leading "www.". */
-function hostOf(raw) {
-  try {
-    return new URL(raw).hostname.replace(/^www\./, "") || "(local)";
-  } catch {
-    return "(local)";
-  }
-}
-
-/** Exact origin (scheme://host:port) to match the probe's per-origin history. */
-function originOf(raw) {
-  try {
-    return new URL(raw).origin;
-  } catch {
-    return null;
-  }
-}
-
 // API permissions that tend to mean an extension is doing heavy, always-on work.
 const HEAVY_APIS = [
   "webRequest",
@@ -194,6 +176,24 @@ export function analyze(snapshot) {
     return l && now - l.ts < PERF_STALE_MS ? l : null;
   };
 
+  // Each tab's URL is read several times below (host for grouping, exact origin to
+  // match the perf/strain stores). Parse each distinct url string once and memoize.
+  //   host:   friendly host for grouping, leading "www." stripped, "(local)" fallback.
+  //   origin: exact scheme://host:port, or null for opaque/non-web urls.
+  const urlMetaCache = new Map();
+  const metaOf = (raw) => {
+    let m = urlMetaCache.get(raw);
+    if (m) return m;
+    try {
+      const u = new URL(raw);
+      m = { host: u.hostname.replace(/^www\./, "") || "(local)", origin: u.origin };
+    } catch {
+      m = { host: "(local)", origin: null };
+    }
+    urlMetaCache.set(raw, m);
+    return m;
+  };
+
   const windows = new Set();
   let pinned = 0;
   let audible = 0;
@@ -221,7 +221,7 @@ export function analyze(snapshot) {
       dupMap.get(key).push(t);
     }
 
-    const host = hostOf(url);
+    const host = metaOf(url).host;
     domainMap.set(host, (domainMap.get(host) || 0) + 1);
     if (!domainTabs.has(host)) domainTabs.set(host, []);
     domainTabs.get(host).push(t.title || url || "(untitled)");
@@ -267,7 +267,7 @@ export function analyze(snapshot) {
   // "Likely heavy" tabs: score every loaded tab and keep the top of the list.
   const heavyTabs = tabs
     .map((t) => {
-      const host = hostOf(t.url || t.pendingUrl || "");
+      const host = metaOf(t.url || t.pendingUrl || "").host;
       const crowded = (domainMap.get(host) || 0) >= HEAVY_DOMAIN_TAB_COUNT;
       const isIdle = t.lastAccessed && now - t.lastAccessed > idleMs;
       const live = liveFor(t.id);
@@ -284,12 +284,16 @@ export function analyze(snapshot) {
         jsHeapMB: live ? live.jsHeapMB : null,
         score,
         reason,
-        stats: tabStats(t, live, now),
+        tab: t,
+        live,
       };
     })
     .filter((t) => t.score > 0)
     .sort((a, b) => b.score - a.score)
-    .slice(0, 8);
+    .slice(0, 8)
+    // Build the (relatively heavy) detail rows only for the 8 tabs we keep, not for
+    // every tab we just scored and discarded.
+    .map(({ tab, live, ...row }) => ({ ...row, stats: tabStats(tab, live, now) }));
 
   // --- Page-performance advisories ------------------------------------------
 
@@ -358,7 +362,7 @@ export function analyze(snapshot) {
   const seenOrigins = new Set();
   const predictions = [];
   for (const t of tabs) {
-    const origin = originOf(t.url || "");
+    const origin = metaOf(t.url || "").origin;
     if (!origin || seenOrigins.has(origin) || warningOrigins.has(origin)) continue;
     seenOrigins.add(origin);
     const h = perfHistory[origin];
@@ -401,7 +405,7 @@ export function analyze(snapshot) {
   //     can offer to act on them.
   const openOrigins = new Set();
   for (const t of tabs) {
-    const o = originOf(t.url || "");
+    const o = metaOf(t.url || "").origin;
     if (o) openOrigins.add(o);
   }
   const chronicRecentMs = CHRONIC_RECENT_DAYS * 86400000;

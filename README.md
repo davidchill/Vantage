@@ -2,7 +2,7 @@
 
 A live **performance console** for Chrome. Vantage runs as an always-on background monitor over your tabs, extensions, cookies/trackers, and the browser's resource usage, then diagnoses what's slowing Chrome down — all in a dark, monospace, instrument-grade side panel.
 
-> **Status:** v0.2.2 — monitoring & diagnosis, a per-site privacy inspector, opt-in rule-based auto-management, long-term strain tracking, and an optional AI analysis. Still pre-1.0 and evolving.
+> **Status:** v0.2.3 — monitoring & diagnosis, a per-site privacy inspector, opt-in rule-based auto-management, long-term strain tracking, and an optional AI analysis. Still pre-1.0 and evolving.
 
 ---
 
@@ -140,7 +140,7 @@ The interesting choices and *why* they went the way they did:
 - **The tracker inspector refuses `webRequest`.** It would be ironic for a tool that flags `webRequest`-using extensions as heavy to use `webRequest` itself. Instead it classifies the hostnames the probe already collected against a curated database — lighter, and honest to the tool's own thesis.
 - **AI is opt-in, bring-your-own-key, and on-demand.** Vantage is otherwise fully local and free. The one feature that leaves the machine requires *your* Anthropic key (stored only locally), never fires automatically (so it can't bill you silently), and only sends the already-analyzed summary — not raw page content. **Structured outputs** constrain the reply to a small JSON schema so rendering never depends on fragile text parsing, and it defaults to the most capable model with cheaper options a click away.
 - **One source of truth, collapsible everywhere.** All surfaces render from `analyze()`'s output, so the popup/panel/automation/AI never disagree. As the data grew dense, every section and the AI card became collapsible (with state that survives the live refresh) so the panel stays navigable instead of becoming a wall.
-- **The always-on loop does no redundant work.** Because the panel re-renders every 5s for as long as it's open, the live path is kept deliberately lean. The toolbar badge runs off the in-memory summary rather than a written-then-read storage cache; the cookie/tracker inspector caches its cookie-store lookups and re-queries them only on a tab switch, reload, or *clear cookies* (the tracker counts still recompute each tick from the probe's host list); and the installed-extension list is enumerated event-driven — on install / uninstall / enable / disable — rather than on every tick. The heartbeat re-reads only what can actually have changed.
+- **The always-on loop does no redundant work.** Because the panel re-renders every 5s for as long as it's open, the live path is kept deliberately lean. The toolbar badge runs off the in-memory summary rather than a written-then-read storage cache; the cookie/tracker inspector caches its cookie-store lookups and re-queries them only on a tab switch, reload, or *clear cookies* (the tracker counts still recompute each tick from the probe's host list); and the installed-extension list is enumerated event-driven — on install / uninstall / enable / disable — rather than on every tick. The analyzer itself parses each tab's URL once per scan and builds the per-row detail blocks only for the rows it actually shows. The heartbeat re-reads — and re-computes — only what can actually have changed.
 
 ---
 

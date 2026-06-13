@@ -6,7 +6,7 @@
 // Self-contained, like automation-ui: its own listeners + paced refresh, so it
 // stays in sync as you switch tabs without touching the main scan loop.
 
-import { esc } from "../shared/summary-view.js";
+import { esc, readout } from "../shared/summary-view.js";
 import { PERF_LIVE_KEY } from "../../core/constants.js";
 import { analyzeTrackers, CATEGORY_LABELS } from "../../core/trackers.js";
 import {
@@ -63,10 +63,6 @@ async function resourceHostsFor(tabId) {
   const wrap = await chrome.storage.session.get(PERF_LIVE_KEY);
   const live = (wrap[PERF_LIVE_KEY] || {})[tabId];
   return live?.resourceHosts || null;
-}
-
-function readout(value, label, hot = false) {
-  return `<div class="readout"><span class="rv${hot ? " hot" : ""}">${value}</span><span class="rl">${label}</span></div>`;
 }
 
 function detailSection(trackers, trackerCookies, cookies) {

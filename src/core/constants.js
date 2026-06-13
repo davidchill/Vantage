@@ -1,6 +1,6 @@
 // Shared configuration for the monitoring core.
 // manifest.json is the canonical version for Chrome; keep VERSION in sync with it.
-export const VERSION = "0.2.2";
+export const VERSION = "0.2.3";
 
 // A tab not accessed in this many minutes is flagged as "idle".
 export const IDLE_MINUTES = 60;

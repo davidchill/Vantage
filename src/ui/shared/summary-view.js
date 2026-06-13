@@ -32,7 +32,7 @@ function formatIdle(min) {
   return `${Math.floor(min / 60)}h idle`;
 }
 
-function readout(value, label, hot = false) {
+export function readout(value, label, hot = false) {
   return `<div class="readout"><span class="rv${hot ? " hot" : ""}">${value}</span><span class="rl">${label}</span></div>`;
 }
 

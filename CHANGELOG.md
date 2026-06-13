@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.2.3 — 2026-06-12
+
+Third efficiency phase — tightens the analyzer (`analyze()`, the per-scan "brain"). No behavior change; the summary it returns is identical, verified by running `analyze()` against a synthetic snapshot and asserting on every section (health, duplicates, heavy tabs, background drain, leaks, predictions, chronic strain, extension classification).
+
+### Analyzer
+- **Detail rows built only for the tabs shown.** "Likely heavy tabs" scored every tab and built its full `tabStats` key/value detail, then kept only the top 8. Now it scores cheaply, slices to 8, and builds the detail rows for just those 8 — the rest are never materialized.
+- **Each tab's URL parsed once.** The module-level `hostOf` / `originOf` helpers (two `new URL()` calls each, recomputed across the main loop, the heavy-tab pass, predictions, and the open-origins pass) are replaced by a single per-scan memoized `metaOf(raw) → { host, origin }`. Identical fallbacks (`"(local)"` host, `null` origin), keyed by the same raw url strings, so repeat passes hit the cache instead of re-parsing.
+
+### UI
+- Deduplicated the `readout()` helper — `summary-view.js` now exports it and `current-tab-ui.js` imports it instead of carrying its own copy.
+
 ## v0.2.2 — 2026-06-12
 
 Second efficiency phase — cuts redundant work from the always-on live loop. No user-facing behavior change; the same data is shown, just without the wasted queries each 5s tick.
