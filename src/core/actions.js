@@ -22,8 +22,11 @@ export async function closeTabs(ids) {
 }
 
 /**
- * Given tab ids that point at the same page, keep the most-recently-used one
- * and close the rest.
+ * Given tab ids that point at the same page, keep the best copy and close the
+ * rest. The keeper is the copy you're most invested in — pinned, then active,
+ * then audible, then most recently used. Pinned and audible copies are never
+ * closed even when they aren't the keeper: a pinned tab is deliberate, and an
+ * audible one is playing something right now.
  * @returns number of tabs closed.
  */
 export async function closeExtras(ids) {
@@ -32,9 +35,16 @@ export async function closeExtras(ids) {
   ).filter(Boolean);
   if (tabs.length < 2) return 0;
 
-  tabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0));
-  const doomed = tabs.slice(1).map((t) => t.id);
-  await chrome.tabs.remove(doomed);
+  // Weighted so the order is pinned > active > audible, with recency as tiebreak.
+  const keepScore = (t) => (t.pinned ? 4 : 0) + (t.active ? 2 : 0) + (t.audible ? 1 : 0);
+  tabs.sort(
+    (a, b) => keepScore(b) - keepScore(a) || (b.lastAccessed || 0) - (a.lastAccessed || 0)
+  );
+  const doomed = tabs
+    .slice(1)
+    .filter((t) => !t.pinned && !t.audible)
+    .map((t) => t.id);
+  if (doomed.length) await chrome.tabs.remove(doomed);
   return doomed.length;
 }
 

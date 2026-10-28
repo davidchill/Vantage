@@ -173,7 +173,10 @@ content.addEventListener("click", async (e) => {
         break;
       case "close-set": {
         const extras = ids.length - 1;
-        if (extras > 0 && confirm(`Close ${extras} duplicate copy(ies)?`))
+        if (
+          extras > 0 &&
+          confirm(`Close up to ${extras} duplicate copy(ies)? Pinned and audible copies are kept.`)
+        )
           await closeExtras(ids);
         break;
       }
@@ -181,7 +184,7 @@ content.addEventListener("click", async (e) => {
         await sleepAllIdle();
         break;
       case "close-dupes":
-        if (confirm("Close every redundant duplicate tab?"))
+        if (confirm("Close every redundant duplicate tab? Pinned and audible copies are kept."))
           await closeAllDuplicateExtras();
         break;
     }

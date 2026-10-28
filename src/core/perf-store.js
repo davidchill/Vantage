@@ -13,18 +13,49 @@ import {
   PERF_HISTORY_MAX_ORIGINS,
   HEAP_SERIES_MAX,
   HEAP_SERIES_MIN_GAP_MS,
+  PERF_WINDOW_MS,
 } from "./constants.js";
 
-/** Exponential moving average; seeds with x when there's no prior value. */
-function ema(prev, x) {
-  if (x == null) return prev;
-  if (prev == null) return x;
-  return Math.round(prev * (1 - PERF_HISTORY_ALPHA) + x * PERF_HISTORY_ALPHA);
+/**
+ * Blocking counters cover one reporting window, nominally PERF_WINDOW_MS. Chrome
+ * throttles timers in long-hidden tabs to about one wake-up a minute, stretching
+ * that window ~12×, so scale the counters back to a per-window rate — otherwise a
+ * single 200ms task a minute reads like heavy background CPU, and per-origin
+ * averages mix 5s and 60s windows. Only ever scales down: a short window (the early
+ * report sent as a tab is hidden) is left as-is rather than amplifying one long
+ * task into a huge rate. Reports without windowMs (older probes) pass through.
+ */
+function normalizeWindow(data) {
+  const windowMs = Math.max(data.windowMs || PERF_WINDOW_MS, PERF_WINDOW_MS);
+  if (windowMs === PERF_WINDOW_MS) return data;
+  const scale = PERF_WINDOW_MS / windowMs;
+  return {
+    ...data,
+    blockingMs: Math.round((data.blockingMs || 0) * scale),
+    blockingHiddenMs: Math.round((data.blockingHiddenMs || 0) * scale),
+  };
 }
 
-/** Append one report to a tab's live entry, maintaining the downsampled heap series. */
-function foldLive(prevLive, data, now) {
-  let heapSeries = (prevLive && prevLive.heapSeries) || [];
+/**
+ * Exponential moving average; seeds with x when there's no prior value. Rounds to
+ * whole numbers unless `digits` asks for decimals (CLS is a small fraction).
+ */
+function ema(prev, x, digits = 0) {
+  if (x == null) return prev;
+  if (prev == null) return x;
+  const v = prev * (1 - PERF_HISTORY_ALPHA) + x * PERF_HISTORY_ALPHA;
+  return digits ? +v.toFixed(digits) : Math.round(v);
+}
+
+/**
+ * Append one report to a tab's live entry, maintaining the downsampled heap series.
+ * The series belongs to a single document: a navigation or reload (new documentId)
+ * or a change of origin starts it fresh — otherwise moving a tab to a heavier site
+ * would read as memory growth.
+ */
+function foldLive(prevLive, data, now, docId) {
+  const sameDoc = prevLive && prevLive.docId === docId && prevLive.origin === data.origin;
+  let heapSeries = (sameDoc && prevLive.heapSeries) || [];
   if (data.jsHeapMB != null) {
     const last = heapSeries[heapSeries.length - 1];
     if (!last || now - last.t >= HEAP_SERIES_MIN_GAP_MS) {
@@ -34,7 +65,7 @@ function foldLive(prevLive, data, now) {
       }
     }
   }
-  return { ...data, ts: now, heapSeries };
+  return { ...data, ts: now, docId, heapSeries };
 }
 
 /** Fold one report into an origin's rolling per-origin history record. */
@@ -47,7 +78,9 @@ function foldHistory(prev, data, now) {
         avgLcpMs: ema(prev.avgLcpMs, data.lcpMs),
         avgInpMs: ema(prev.avgInpMs, data.inpMs),
         avgLoadMs: ema(prev.avgLoadMs, data.loadMs),
-        maxCls: Math.max(prev.maxCls || 0, data.cls || 0),
+        // A rolling average rather than an all-time max, so one bad visit fades
+        // instead of flagging the site for layout shift forever.
+        avgCls: ema(prev.avgCls, data.cls, 3),
         samples: prev.samples + 1,
         lastSeen: now,
       }
@@ -57,7 +90,7 @@ function foldHistory(prev, data, now) {
         avgLcpMs: data.lcpMs ?? null,
         avgInpMs: data.inpMs ?? null,
         avgLoadMs: data.loadMs ?? null,
-        maxCls: data.cls || 0,
+        avgCls: data.cls ?? null,
         samples: 1,
         lastSeen: now,
       };
@@ -66,7 +99,8 @@ function foldHistory(prev, data, now) {
 /**
  * Fold a batch of content-script reports into the live + history stores with a
  * single read-modify-write of each store, no matter how many reports are in the
- * batch. Each entry is { tabId, data, ts }; entries are folded in arrival order.
+ * batch. Each entry is { tabId, docId, data, ts }; entries are folded in arrival
+ * order.
  */
 export async function recordPerfReports(reports) {
   if (!reports.length) return;
@@ -79,8 +113,9 @@ export async function recordPerfReports(reports) {
   const history = histWrap[PERF_HISTORY_KEY] || {};
   let historyTouched = false;
 
-  for (const { tabId, data, ts } of reports) {
-    live[tabId] = { ...foldLive(live[tabId], data, ts), tabId };
+  for (const { tabId, docId, data: raw, ts } of reports) {
+    const data = normalizeWindow(raw);
+    live[tabId] = { ...foldLive(live[tabId], data, ts, docId), tabId };
 
     // Per-origin rolling history (skip opaque origins).
     if (data.origin && data.origin !== "null") {

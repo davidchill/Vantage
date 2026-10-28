@@ -6,9 +6,9 @@
 // strain". One record per origin, in storage.local so it survives restarts.
 //
 // The analyzer already decides what's strained each scan (performance.live /
-// .background / .leaks / .predictions). This module just folds those verdicts
-// into a running tally per origin, then the analyzer reads the tally back (via
-// the snapshot) to surface the chronic offenders. No new measurement here.
+// .background / .leaks). This module just folds those verdicts into a running
+// tally per origin, then the analyzer reads the tally back (via the snapshot) to
+// surface the chronic offenders. No new measurement here.
 
 import {
   STRAIN_HISTORY_KEY,
@@ -30,9 +30,11 @@ function originOf(raw) {
 
 /**
  * Collapse one analyzed summary into origin -> Set(kinds) strained this scan.
- * Live jank / background drain / leaks are per-tab (resolve origin from the tab
- * url); predictions are already per-origin. Heavy main-thread blocking — whether
- * measured live or predicted from history — both fold into the "jank" kind.
+ * Only MEASURED strain counts: live jank, background drain and leaks, each per-tab
+ * (origin resolved from the tab url). History-based predictions are deliberately
+ * left out — they're a guess from past averages, and folding them in would let a
+ * site rack up "strained" scans every minute just for being open, feeding the
+ * ledger its own past verdicts.
  */
 function strainedOriginsFrom(summary) {
   const perf = summary.performance || {};
@@ -46,10 +48,6 @@ function strainedOriginsFrom(summary) {
   for (const a of perf.live || []) add(originOf(a.url), "jank");
   for (const b of perf.background || []) add(originOf(b.url), "background");
   for (const lk of perf.leaks || []) add(originOf(lk.url), "leak");
-  for (const p of perf.predictions || []) {
-    if (p.heavy) add(p.origin, "jank");
-    if (p.poorVitals && p.poorVitals.length) add(p.origin, "vitals");
-  }
   return map;
 }
 

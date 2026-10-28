@@ -103,12 +103,17 @@ function cmpStr(a, b) {
   return String(a || "").localeCompare(String(b || ""));
 }
 
+const byScore = (a, b) => b.score - a.score;
+
 const SORTS = {
+  // Heavy tabs arrive as every loaded tab, so a sort here also decides WHICH tabs
+  // make the visible top rows. "name" keeps the heaviest tabs (`pick`) and only
+  // alphabetizes them, rather than listing the alphabetically-first tabs.
   heavy: [
-    { key: "weight", label: "weight", cmp: (a, b) => b.score - a.score },
+    { key: "weight", label: "weight", cmp: byScore },
     { key: "cpu", label: "cpu", cmp: (a, b) => b.blockingMs - a.blockingMs },
     { key: "mem", label: "memory", cmp: (a, b) => (b.jsHeapMB || 0) - (a.jsHeapMB || 0) },
-    { key: "name", label: "name", cmp: (a, b) => cmpStr(a.title, b.title) },
+    { key: "name", label: "name", pick: byScore, cmp: (a, b) => cmpStr(a.title, b.title) },
   ],
   dupes: [
     { key: "count", label: "count", cmp: (a, b) => b.count - a.count },
@@ -156,6 +161,17 @@ function activeSort(sectionId, sortState) {
 function sortedFor(sectionId, list, sortState) {
   const opt = activeSort(sectionId, sortState);
   return opt ? [...list].sort(opt.cmp) : list;
+}
+
+/**
+ * The top `n` rows under a section's active sort. An option's `pick` (when set)
+ * chooses which rows make the cut; its `cmp` then sets their display order.
+ */
+function topFor(sectionId, list, sortState, n) {
+  const opt = activeSort(sectionId, sortState);
+  if (!opt) return list.slice(0, n);
+  const top = [...list].sort(opt.pick || opt.cmp).slice(0, n);
+  return opt.pick ? top.sort(opt.cmp) : top;
 }
 
 /** Header control showing the current sort; cycles to the next on click. */
@@ -341,9 +357,11 @@ export function renderSummary(
 
   // ── Likely heavy tabs ───────────────────────────────────────────────────
   const warnMs = (perf && perf.warnMs) || 400;
-  const heavyTabRows = sortedFor("heavy", heavyTabs || [], sortState).map((t) => {
+  const heavyTabRows = topFor("heavy", heavyTabs || [], sortState, 8).map((t) => {
     let note;
     if (t.blockingMs >= warnMs) note = `⚠ ${t.blockingMs}ms`;
+    else if (t.reason === "high memory") note = "high memory";
+    else if (t.reason === "huge DOM") note = `${Math.round(t.domNodes / 1000)}k DOM nodes`;
     else if (t.audible) note = "🔊 media";
     else if (t.reason === "loaded · idle") note = formatIdle(t.idleMinutes);
     else note = "loaded";

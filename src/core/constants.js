@@ -1,12 +1,17 @@
 // Shared configuration for the monitoring core.
 // manifest.json is the canonical version for Chrome; keep VERSION in sync with it.
-export const VERSION = "0.2.5";
+export const VERSION = "0.2.6";
 
 // A tab not accessed in this many minutes is flagged as "idle".
 export const IDLE_MINUTES = 60;
 
 // When this many tabs share one domain, flag it as a "heavy domain".
 export const HEAVY_DOMAIN_TAB_COUNT = 4;
+
+// "Likely Heavy Tabs": a measured JS heap or DOM at/above these is called out as
+// the reason a tab ranks high (and they set the scale of those score terms).
+export const HEAVY_HEAP_MB = 500;
+export const HEAVY_DOM_NODES = 15000;
 
 // Background scan cadence and the alarm that drives it.
 export const ALARM_NAME = "optimizer-scan";
@@ -33,8 +38,15 @@ export const PERF_HISTORY_ALPHA = 0.3;
 // Cap on how many origins we retain history for (LRU-evicted beyond this).
 export const PERF_HISTORY_MAX_ORIGINS = 250;
 
-// A live report older than this is treated as stale and ignored.
+// The probe's nominal reporting window (keep in sync with REPORT_MS in
+// perf-probe.js). Blocking counters are normalized to "ms per this window".
+export const PERF_WINDOW_MS = 5000;
+
+// A live report older than this is treated as stale and ignored. Hidden tabs get
+// longer: after ~5 minutes hidden, Chrome throttles their timers to about one
+// wake-up a minute, so their reports legitimately arrive that far apart.
 export const PERF_STALE_MS = 60000;
+export const PERF_HIDDEN_STALE_MS = 3 * 60000;
 
 // Minimum samples before an origin's history is trusted for predictions.
 export const PERF_MIN_SAMPLES = 3;
@@ -43,12 +55,16 @@ export const PERF_MIN_SAMPLES = 3;
 // HIDDEN. Lower bar than foreground — any background CPU burn is suspect.
 export const BACKGROUND_BLOCKING_WARN_MS = 150;
 
-// Memory-leak detection: flag a tab whose JS heap climbs at least this much
-// over at least this long. Heap samples are downsampled into a rolling series.
+// Memory-leak detection: flag a tab whose JS heap FLOOR climbs at least this much
+// over at least this long. Heap readings rise and fall with garbage collection, so
+// growth compares the lowest of the first few samples with the lowest of the last
+// few rather than two single readings. A rising floor means memory isn't being
+// given back; the GC sawtooth cancels out.
 export const LEAK_GROWTH_MB = 75;
-export const LEAK_MIN_SPAN_MIN = 5;
-export const HEAP_SERIES_MAX = 40; // samples retained per tab
-export const HEAP_SERIES_MIN_GAP_MS = 25000; // downsample cadence (~25s)
+export const LEAK_MIN_SPAN_MIN = 10;
+export const LEAK_FLOOR_SAMPLES = 5; // samples whose minimum forms each end's floor
+export const HEAP_SERIES_MAX = 40; // samples retained per tab (~40 min at the cadence below)
+export const HEAP_SERIES_MIN_GAP_MS = 60000; // downsample cadence (~1 min)
 
 // Web Vitals "poor" cutoffs (Google's thresholds) used to flag page quality.
 export const LCP_POOR_MS = 4000; // slow to load
@@ -60,7 +76,11 @@ export const CLS_POOR = 0.25; // visual instability
 // orthogonal question "how OFTEN, and how persistently, does it cross into
 // strain?" — the time dimension behind "continuously causing strain". One record
 // per origin in storage.local, so it survives restarts (see strain-history.js).
-export const STRAIN_HISTORY_KEY = "strainHistory"; // storage.local: { [origin]: record }
+export const STRAIN_HISTORY_KEY = "strainLedger"; // storage.local: { [origin]: record }
+// Pre-0.2.6 ledger key. Those tallies were inflated (tab-event scans and history
+// predictions both counted as strain), so 0.2.6 starts a fresh ledger under the key
+// above and deletes this one on install/update.
+export const LEGACY_STRAIN_HISTORY_KEY = "strainHistory";
 export const STRAIN_HISTORY_MAX_ORIGINS = 250; // LRU cap, mirrors perf history
 
 // Two strained scans count as "consecutive" (one streak) if seen within this

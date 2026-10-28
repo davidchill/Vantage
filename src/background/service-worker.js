@@ -12,16 +12,34 @@ import {
   SCAN_INTERVAL_MINUTES,
   PERF_FLUSH_MS,
   PERF_FLUSH_MAX_BATCH,
+  LEGACY_STRAIN_HISTORY_KEY,
 } from "../core/constants.js";
+
+// Every storage update the worker makes is a read-modify-write of a whole object
+// (perf stores, strain ledger, automation tracker). Two in flight at once can read
+// the same snapshot and overwrite each other's changes, so they run one at a time
+// through this queue: each task starts only after the previous one settles.
+let queue = Promise.resolve();
+function enqueue(task) {
+  const run = queue.then(task);
+  queue = run.catch(() => {});
+  return run;
+}
+
+/** Queue a scan behind any storage work already in flight. */
+function scan(opts) {
+  return enqueue(() => runScan(opts));
+}
 
 // Rebuild the summary and reflect it on the toolbar badge. The panel renders from
 // its own scan, so there's nothing to cache here — the badge is the only consumer.
 //
 // `automate` runs the once-per-authoritative-scan side effects (strain ledger +
 // rule-based auto-management). It's turned off for the follow-up re-scan after
-// automation acts, so those side effects fire exactly once per real scan, never on
-// the corrective re-scan (which would double-count strain or re-trigger automation).
-async function scan({ automate = true } = {}) {
+// automation acts and for the badge refreshes driven by tab events, so those side
+// effects fire exactly once per real (alarm-cadence) scan — never on a corrective
+// re-scan or a burst of tab activity, which would inflate the strain counts.
+async function runScan({ automate = true } = {}) {
   const summary = analyze(await collectSnapshot());
   updateBadge(summary);
   if (!automate) return summary;
@@ -39,10 +57,11 @@ async function scan({ automate = true } = {}) {
   // Rule-based auto-management: act on tabs that have been strained too long.
   // No-op unless the user has enabled it in settings. Isolated so a failure here
   // never breaks the monitoring scan itself. After it acts the badge is stale, so
-  // re-scan once without re-running automation to reflect the new tab state.
+  // re-scan once without re-running automation to reflect the new tab state. (Run
+  // directly — this scan already holds the queue, so queueing it would deadlock.)
   try {
     const acted = await runAutomation(summary, summary.takenAt);
-    if (acted.length) await scan({ automate: false });
+    if (acted.length) await runScan({ automate: false });
   } catch (err) {
     console.warn("automation run failed:", err);
   }
@@ -50,22 +69,74 @@ async function scan({ automate = true } = {}) {
   return summary;
 }
 
+// Badge colors follow the health verdict, using the panel's palette: calm blue when
+// Good, amber when Strained, red when Heavy. Amber needs dark text to stay legible.
+const BADGE_STYLE = {
+  Good: { bg: "#4a6da7", fg: "#ffffff" },
+  Strained: { bg: "#e3a33b", fg: "#10151e" },
+  Heavy: { bg: "#d9534f", fg: "#ffffff" },
+};
+
 function updateBadge(summary) {
+  const { level, factors } = summary.health;
+  const style = BADGE_STYLE[level] || BADGE_STYLE.Good;
   chrome.action.setBadgeText({ text: String(summary.totals.tabs) });
-  chrome.action.setBadgeBackgroundColor({
-    color: summary.issues > 0 ? "#d9534f" : "#4a6da7",
+  chrome.action.setBadgeBackgroundColor({ color: style.bg });
+  chrome.action.setBadgeTextColor({ color: style.fg });
+  // Hovering the toolbar icon shows the verdict and what's driving it.
+  const why = factors.map((f) => f.label).join(" · ");
+  chrome.action.setTitle({
+    title: `Vantage — ${level}${why ? `: ${why}` : ""} (click to toggle panel)`,
   });
 }
 
 // Debounce: tab events can fire in bursts; one scan shortly after is enough.
+// These scans only refresh the badge. Strain recording and auto-management stay on
+// the alarm's fixed cadence, so episode counts track elapsed time rather than how
+// often you switch tabs or a page retitles itself.
 let scanTimer = null;
 function scheduleScan() {
   clearTimeout(scanTimer);
-  scanTimer = setTimeout(scan, 500);
+  scanTimer = setTimeout(() => scan({ automate: false }), 500);
 }
 
-chrome.runtime.onInstalled.addListener(() => {
+// The alarm is the only driver of the strain ledger and auto-management, so it must
+// exist. Alarms usually persist, but Chrome may clear them on browser restart — so
+// re-check every time the worker starts, not only on install.
+async function ensureAlarm() {
+  if (!(await chrome.alarms.get(ALARM_NAME))) {
+    chrome.alarms.create(ALARM_NAME, { periodInMinutes: SCAN_INTERVAL_MINUTES });
+  }
+}
+ensureAlarm().catch((err) => console.warn("Could not ensure scan alarm:", err));
+
+// Manifest content scripts only reach pages loaded after install, and an update or
+// reload cuts off the probes already running in open tabs. Inject the probe into
+// every open web page so monitoring starts now rather than after each tab's next
+// reload. (The probe stops any earlier copy on the same page, so this is safe even
+// where one is already running.) Asleep tabs are skipped — they get the manifest
+// probe when they wake and reload.
+async function injectProbeIntoOpenTabs() {
+  const tabs = await chrome.tabs.query({ url: ["http://*/*", "https://*/*"] });
+  await Promise.all(
+    tabs
+      .filter((t) => !t.discarded)
+      .map((t) =>
+        chrome.scripting
+          .executeScript({ target: { tabId: t.id }, files: ["src/content/perf-probe.js"] })
+          .catch(() => {}) // pages extensions can't script (Web Store, error pages)
+      )
+  );
+}
+
+chrome.runtime.onInstalled.addListener(({ reason }) => {
   chrome.alarms.create(ALARM_NAME, { periodInMinutes: SCAN_INTERVAL_MINUTES });
+  if (reason === "install" || reason === "update") {
+    injectProbeIntoOpenTabs().catch((err) => console.warn("Probe injection failed:", err));
+  }
+  // Drop the pre-0.2.6 strain ledger (inflated counts); the new key starts clean.
+  // A no-op once it's gone, so it's safe to run on every install/update.
+  chrome.storage.local.remove(LEGACY_STRAIN_HISTORY_KEY).catch(() => {});
   // Clicking the toolbar icon toggles the side panel open/closed on any page.
   // This is persistent, but we set it on install so it's always in effect.
   chrome.sidePanel
@@ -80,12 +151,17 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM_NAME) scan();
 });
 
-// Keep the badge responsive to tab activity between scheduled scans.
+// Keep the badge responsive between scheduled scans — but only to tab changes that
+// can move it: the tab count (created/removed) or the health verdict (a tab moving
+// to another site, finishing a load, or being slept/woken). Title, favicon and audio
+// updates are ignored, or a page that retitles itself every second would trigger a
+// scan every second; switching tabs changes neither, so it isn't watched at all.
 chrome.tabs.onCreated.addListener(scheduleScan);
-chrome.tabs.onUpdated.addListener(scheduleScan);
-chrome.tabs.onActivated.addListener(scheduleScan);
+chrome.tabs.onUpdated.addListener((_tabId, info) => {
+  if (info.url || info.status === "complete" || info.discarded !== undefined) scheduleScan();
+});
 chrome.tabs.onRemoved.addListener((tabId) => {
-  dropLiveTab(tabId).catch(() => {});
+  enqueue(() => dropLiveTab(tabId)).catch(() => {});
   scheduleScan();
 });
 
@@ -102,12 +178,14 @@ function flushPerfReports() {
   perfFlushTimer = null;
   const batch = perfBuffer.splice(0);
   if (batch.length) {
-    recordPerfReports(batch).catch((err) => console.warn("perf record failed:", err));
+    enqueue(() => recordPerfReports(batch)).catch((err) =>
+      console.warn("perf record failed:", err)
+    );
   }
 }
 
-function queuePerfReport(tabId, data) {
-  perfBuffer.push({ tabId, data, ts: Date.now() });
+function queuePerfReport(tabId, docId, data) {
+  perfBuffer.push({ tabId, docId, data, ts: Date.now() });
   if (perfBuffer.length >= PERF_FLUSH_MAX_BATCH) flushPerfReports();
   else if (perfFlushTimer == null) perfFlushTimer = setTimeout(flushPerfReports, PERF_FLUSH_MS);
 }
@@ -150,7 +228,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true; // keep the message channel open for the async response
   }
   if (msg?.type === "perf-report" && sender.tab?.id != null) {
-    queuePerfReport(sender.tab.id, msg.data);
+    // Only the document actually showing in the tab counts. Chrome also runs the
+    // probe in prerendered pages (and briefly in pages being torn down), which
+    // report under the same tab id and would mix a second page's numbers in.
+    if (!sender.documentLifecycle || sender.documentLifecycle === "active") {
+      queuePerfReport(sender.tab.id, sender.documentId, msg.data);
+    }
     return false; // fire-and-forget
   }
   if (msg?.type === "deep-profile") {

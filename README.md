@@ -2,7 +2,7 @@
 
 A live **performance console** for Chrome. Vantage runs as an always-on background monitor over your tabs, extensions, cookies/trackers, and the browser's resource usage, then diagnoses what's slowing Chrome down — all in a dark, monospace, instrument-grade side panel.
 
-> **Status:** v0.2.5 — monitoring & diagnosis, a per-site privacy inspector, opt-in rule-based auto-management, long-term strain tracking, an optional AI analysis, and in-context help throughout. Still pre-1.0 and evolving.
+> **Status:** v0.2.6 — monitoring & diagnosis, a per-site privacy inspector, opt-in rule-based auto-management, long-term strain tracking, an optional AI analysis, and in-context help throughout. This release is an accuracy pass: measured-only chronic strain, standard CLS, GC-robust leak detection, throttling-aware background detection, safer duplicate cleanup, and a health-coloured badge. Still pre-1.0 and evolving.
 
 ---
 
@@ -35,10 +35,12 @@ Two constraints shape everything:
 ## Features
 
 ### Chrome Health Score
-A single **Good / Strained / Heavy** verdict at the top of the panel, synthesized from every signal (memory pressure, tab count, background CPU drain, memory leaks, live jank, heavy origins, open chronic-strain sites). The top contributing factors are listed so the verdict is explainable, never a black box.
+A single **Good / Strained / Heavy** verdict at the top of the panel, synthesized from every signal (memory pressure, tab count, background CPU drain, memory leaks, live jank, heavy origins, open chronic-strain sites). The top contributing factors are listed so the verdict is explainable, never a black box. The toolbar badge carries the same verdict — blue when Good, amber when Strained, red when Heavy — and hovering the icon shows the verdict and its top factors without opening the panel.
 
 ### Tab telemetry
-Totals (tabs, windows, sleeping, audible, pinned, muted, loading), **duplicate-tab sets**, **idle tabs** (untouched 60 min+), and **crowded domains** (one site hogging many tabs).
+Totals (tabs, windows, sleeping, audible, pinned, muted, loading), **duplicate-tab sets** (exact address match, including anything after `#` — many apps, like Gmail, route by it), **idle tabs** (untouched 60 min+), and **crowded domains** (one site hogging many tabs).
+
+**Likely heavy tabs** ranks every loaded tab by measured signals first — main-thread blocking, then JS heap and DOM size — then audio, idle-but-loaded, and crowding, with the reason on each row (*janky*, *high memory*, *k DOM nodes*, …). Sorting by cpu or memory re-ranks every loaded tab, not just the rows already shown.
 
 ### System & Chrome gauges
 - **`SYS MEM` / `SYS CPU`** — whole-machine memory and CPU usage (`chrome.system.memory` / `chrome.system.cpu`), across every process, not Chrome's slice. The labels and tooltips say so explicitly so the numbers aren't mistaken for Chrome's footprint. CPU is sampled over a short interval (two readings of the cumulative per-core tick counters) since a single reading is meaningless.
@@ -48,13 +50,13 @@ Totals (tabs, windows, sleeping, audible, pinned, muted, loading), **duplicate-t
 An in-page probe reads each page's **own** Performance APIs — no DevTools banner — and reports compact metrics every 5s:
 
 - **Live jank** — main-thread blocking happening *right now* (Long Tasks over the 50 ms budget).
-- **Background CPU drain** — tabs burning CPU while **hidden**. The worst kind of waste: you can't even see it. Held to a lower bar than foreground blocking.
-- **Memory-leak trends** — a downsampled per-tab JS-heap series flags steady climbers (e.g. +75 MB over 5 min+).
-- **Web Vitals** — LCP (load), INP (interaction latency), CLS (layout shift), plus page load time.
-- **Predictions** — a persisted per-origin rolling average ("this site *tends* to be heavy / slow / laggy"), so a known-bad site is flagged the moment you open it, before it misbehaves again.
+- **Background CPU drain** — tabs burning CPU while **hidden**. The worst kind of waste: you can't even see it. Held to a lower bar than foreground blocking. Throttling-aware: Chrome slows long-hidden tabs' timers to about one wake-up a minute, so each report carries its window length and blocking is normalized to a per-5s rate, and hidden tabs get a longer staleness allowance.
+- **Memory-leak trends** — a per-tab JS-heap series (sampled about once a minute, scoped to the current page) flags a heap whose **floor** — its low point — climbs 75 MB+ over 10 min+. Comparing low points rather than single readings means garbage-collection sawtooth can't fake or hide a leak; navigating, reloading, or a prerendered page never reads as growth.
+- **Web Vitals** — LCP (load), INP (interaction latency), CLS (layout shift, measured as Core Web Vitals defines it: the worst session window), plus page load time.
+- **Predictions** — a persisted per-origin rolling average ("this site *tends* to be heavy / slow / laggy"), so a known-bad site is flagged the moment you open it, before it misbehaves again. Rolling averages (no all-time maximums) let a site's record recover; asleep tabs aren't predicted.
 
 ### Chronic Strain tracking
-A persistent **per-origin "repeat offender" ledger** — the time dimension the per-origin averages lack. It answers *how often, and how persistently,* a site crosses into strain, not just how heavy it is on average. Each scan folds the strained origins into a running tally (episode count, current/worst consecutive streak, per-kind breakdown) that survives restarts. The **Chronic Strain** section surfaces sites flagged repeatedly and still misbehaving recently, flagging which are open right now.
+A persistent **per-origin "repeat offender" ledger** — the time dimension the per-origin averages lack. It answers *how often, and how persistently,* a site crosses into strain, not just how heavy it is on average. Once a minute, on the background alarm (tab activity never adds counts), the origins with **measured** strain — live jank, background drain, memory growth — fold into a running tally (episode count, current/worst consecutive streak, per-kind breakdown) that survives restarts. History-based predictions are deliberately kept out, so the ledger can't feed on its own past verdicts. The **Chronic Strain** section surfaces sites flagged repeatedly and still misbehaving recently, flagging which are loaded right now (open and not asleep).
 
 ### Current Tab inspector
 Ads, trackers, third-party domains, and cookies for the page you're actually looking at — refreshed as you switch tabs:
@@ -75,7 +77,7 @@ Rule-based **auto-sleep / auto-close** of tabs that stay strained too long. The 
 On demand, Vantage ships the analyzed summary to the Anthropic API and renders Claude's plain-English verdict plus a prioritized, severity-ranked list of suggestions that name the actual tabs, sites, and extensions to act on. Off until you add an API key; **on-demand only**, never on the live loop.
 
 ### Cleanup actions
-Per-tab **sleep** (`tabs.discard`) and **close**, plus bulk **sleep all idle** and **purge duplicates** sweeps. Destructive actions confirm first.
+Per-tab **sleep** (`tabs.discard`) and **close**, plus bulk **sleep all idle** and **purge duplicates** sweeps. Destructive actions confirm first. Purge keeps the copy you're most invested in (pinned › active › audible › most recent) and never closes a pinned or audible copy.
 
 ### The UI
 A **dark, monospace, "observability console"** side panel: command-bar header with a live indicator, health-verdict hero, hairline metric cluster, segmented telemetry bars, and log-style sections. Every row **expands** to a detail block; every section and the AI card **collapse** to keep a data-dense panel navigable. Expand / collapse / sort state all survive the 5s live refresh. Blueprint-grid atmosphere, motion confined to the shell so the refresh never flickers, and `prefers-reduced-motion` honored.
@@ -88,7 +90,7 @@ A **dark, monospace, "observability console"** side panel: command-bar header wi
 
 - **Manifest V3** Chrome extension — background **service worker** (ES module), a **content-script** probe, and a **side-panel** UI.
 - **Vanilla JavaScript (ES modules), no build step, no dependencies.** Source files load directly as `type: "module"`; there is nothing to compile or bundle. `package.json` exists only for metadata.
-- **Chrome platform APIs:** `tabs`, `tabGroups`, `system.memory`, `system.cpu`, `storage` (`session` + `local`), `alarms`, `sidePanel`, `management`, `debugger`, `cookies`.
+- **Chrome platform APIs:** `tabs`, `tabGroups`, `system.memory`, `system.cpu`, `storage` (`session` + `local`), `alarms`, `sidePanel`, `management`, `debugger`, `cookies`, `scripting`.
 - **Web Performance APIs** (in the page): `PerformanceObserver` (longtask, largest-contentful-paint, layout-shift, event), `performance.memory`, resource & navigation timing.
 - **Anthropic API** (optional) — called directly from the extension via `fetch` with structured outputs; no SDK, no backend.
 - Storage-only persistence (no server); system monospace font stack (Cascadia Code / JetBrains Mono / SF Mono), no bundled assets.
@@ -116,8 +118,10 @@ src/
     actions.js                sleep / close tab operations
     ai-analysis.js            builds the prompt, calls the Anthropic API, parses the reply
   background/
-    service-worker.js         periodic + event-driven scans, badge, perf intake,
-                              strain recording, automation, deep profiler
+    service-worker.js         alarm scans (+ badge-only event scans), health badge,
+                              perf intake, strain recording, automation, probe
+                              injection on install/update, one queue for all
+                              storage writes, deep profiler
   content/
     perf-probe.js             in-page Performance-API probe (Long Tasks, Web Vitals, hosts)
   ui/
@@ -137,14 +141,15 @@ src/
 
 The interesting choices and *why* they went the way they did:
 
-- **Behavioral proxies over fake precision.** Stable Chrome won't give extensions per-tab CPU/RAM, so rather than display a number we can't actually measure, Vantage ranks "likely heavy" from signals it *can* read (measured main-thread blocking first, then media/idle/crowding) and labels extensions by permission breadth. The deep profiler is the explicit escape hatch when you want true figures and accept the debug banner.
+- **Behavioral proxies over fake precision.** Stable Chrome won't give extensions per-tab CPU/RAM, so rather than display a number we can't actually measure, Vantage ranks "likely heavy" from signals it *can* read (measured main-thread blocking first, then measured JS heap and DOM size, then media/idle/crowding) and labels extensions by permission breadth. The deep profiler is the explicit escape hatch when you want true figures and accept the debug banner.
 - **A passive probe, not a debugger.** Reading the page's own Performance APIs from a content script is cheap enough to run on every tab forever and shows no banner. Attaching `chrome.debugger` to every tab would be heavyweight and alarming — so that's reserved for explicit, one-tab deep profiling.
 - **Per-origin *history* vs per-origin *strain* are different questions.** The rolling EMA answers "how heavy is this site on average" (→ predictions). The strain ledger answers "how often / how persistently does it cross the line" (→ chronic offenders). Keeping them separate avoids smearing a site that's occasionally terrible into a site that's mildly heavy all the time.
+- **The verdict counts only what was measured, at a fixed cadence.** A diagnostics tool that overstates strain trains you to ignore it. So the chronic ledger records only measured strain, once a minute on the alarm — never predictions, never tab-activity bursts; asleep tabs don't count as strain; Web Vitals follow the standard definitions; and readings are corrected for Chrome's own behavior (hidden-tab timer throttling, prerendered pages, garbage-collection sawtooth) before they're judged.
 - **Automation gates on *time*, and ships off.** Detection is instantaneous, but acting on a momentary spike would be hostile, so automation waits for a continuous sustain window and re-validates live state before touching anything — and never auto-runs until you opt in. Sleep is preferred over close; the audit log means nothing disappears silently.
 - **The tracker inspector refuses `webRequest`.** It would be ironic for a tool that flags `webRequest`-using extensions as heavy to use `webRequest` itself. Instead it classifies the hostnames the probe already collected against a curated database — lighter, and honest to the tool's own thesis.
 - **AI is opt-in, bring-your-own-key, and on-demand.** Vantage is otherwise fully local and free. The one feature that leaves the machine requires *your* Anthropic key (stored only locally), never fires automatically (so it can't bill you silently), and only sends the already-analyzed summary — not raw page content. **Structured outputs** constrain the reply to a small JSON schema so rendering never depends on fragile text parsing, and it defaults to the most capable model with cheaper options a click away.
 - **One source of truth, collapsible everywhere.** All surfaces render from `analyze()`'s output, so the popup/panel/automation/AI never disagree. As the data grew dense, every section and the AI card became collapsible (with state that survives the live refresh) so the panel stays navigable instead of becoming a wall.
-- **The always-on loop does no redundant work.** Because the panel re-renders every 5s for as long as it's open, the live path is kept deliberately lean. The toolbar badge runs off the in-memory summary rather than a written-then-read storage cache; the cookie/tracker inspector caches its cookie-store lookups and re-queries them only on a tab switch, reload, or *clear cookies* (the tracker counts still recompute each tick from the probe's host list); and the installed-extension list is enumerated event-driven — on install / uninstall / enable / disable — rather than on every tick. The analyzer itself parses each tab's URL once per scan and builds the per-row detail blocks only for the rows it actually shows. The heartbeat re-reads — and re-computes — only what can actually have changed.
+- **The always-on loop does no redundant work.** Because the panel re-renders every 5s for as long as it's open, the live path is kept deliberately lean. The toolbar badge runs off the in-memory summary rather than a written-then-read storage cache; the cookie/tracker inspector caches its cookie-store lookups and re-queries them only on a tab switch, reload, or *clear cookies* (the tracker counts still recompute each tick from the probe's host list); and the installed-extension list is enumerated event-driven — on install / uninstall / enable / disable — rather than on every tick. The analyzer itself parses each tab's URL once per scan. In the background, tab events only refresh the badge, and only the ones that can change it (title, favicon, and tab-switch events are ignored), and every storage read-modify-write goes through a single queue so concurrent updates can't overwrite each other. The heartbeat re-reads — and re-computes — only what can actually have changed.
 - **The probe is featherweight in every tab.** The one component that runs in *every* page is held to a stricter bar still: it accumulates resource timing incrementally through a `PerformanceObserver` instead of re-scanning the page's whole (ever-growing) resource buffer each tick, samples the expensive full-DOM node count only occasionally and only while the tab is visible, and reads fixed navigation timing just once. On the receiving end, the worker batches the staggered reports from all tabs into a single storage write per flush. The result: a performance monitor that imposes as little load as possible on the pages it's measuring — which is the whole point.
 
 ---
@@ -169,6 +174,7 @@ The interesting choices and *why* they went the way they did:
 | `management` | The extensions inventory (and the permission-warning text). |
 | `debugger` | The opt-in deep profiler only (true per-tab metrics). |
 | `cookies` | The Current-Tab cookie inspector and *clear cookies*. |
+| `scripting` | Inject the probe into tabs already open when Vantage is installed or updated — otherwise they'd go unmeasured until reloaded. No extra install warning. |
 | `host_permissions: http/https` | Inject the performance probe into pages and read resource hostnames. |
 
 ---
@@ -180,14 +186,16 @@ The interesting choices and *why* they went the way they did:
 3. Click **Load unpacked** and select this project folder.
 4. Pin **Vantage** to the toolbar and click the icon to toggle the panel.
 
-Requires **Chrome 121+**. Page-performance data appears as you browse (the probe injects into pages loaded after install); predictions and chronic-strain history build up over time. To enable AI Analysis, open settings (⚙) and paste an Anthropic API key.
+Requires **Chrome 121+**. Page-performance data starts within seconds — the probe is injected into already-open tabs on install or update, and into every new page as it loads; predictions and chronic-strain history build up over time. To enable AI Analysis, open settings (⚙) and paste an Anthropic API key.
 
 ---
 
 ## Limitations & notes
 
 - Stable Chrome does not expose per-tab or per-extension CPU/RAM to extensions; Vantage uses system-level resources plus behavioral heuristics and permission breadth as proxies. The deep profiler is the one source of true per-tab figures.
-- `performance.memory` is coarse (Chrome quantizes it); treat live per-tab heap as a relative signal, not an exact byte count.
+- `performance.memory` reports the JS heap of a page's whole renderer process, so tabs from the same site sharing a process show the same figure; treat per-tab heap as indicative rather than exact. (On desktop Chrome it is precise and updates live.)
+- Long-hidden tabs report only about once a minute (Chrome's timer throttling). Vantage normalizes for it, but background readings are coarser than foreground ones.
+- Long Tasks only see work in tasks over 50 ms on the page's main thread — not frequent short tasks, workers, or cross-origin iframes — and carry no attribution of *which* script was responsible.
 - Content scripts can't run on `chrome://` pages, the Web Store, or the PDF viewer; those tabs show metadata only.
 - The tracker database is a curated, representative list — enough to answer "what's tracking me here," not an exhaustive blocklist.
 - AI Analysis is metered by Anthropic and billed to your key; one analysis is a fraction of a cent to a few cents depending on the model.
@@ -201,5 +209,6 @@ Requires **Chrome 121+**. Page-performance data appears as you browse (the probe
 | ------- | ----- |
 | 0.1.0 | Monitoring, diagnosis, cleanup actions, console UI (initial release). |
 | 0.2.0 | Current-Tab inspector, auto-management, chronic-strain tracking, AI analysis, collapsible UI. |
-| 0.2.x | Efficiency passes (lighter probe, batched writes, cached reads), plus QoL: in-context tooltips & per-section explainers, system-vs-Chrome gauge clarity, and a measured `JS HEAP` gauge (this release). |
+| 0.2.x | Efficiency passes (lighter probe, batched writes, cached reads), QoL (in-context tooltips & per-section explainers, system-vs-Chrome gauge clarity, a measured `JS HEAP` gauge), and an accuracy pass in 0.2.6 (measured-only chronic strain, standard CLS, GC-robust leak detection, throttling-aware background detection, safer duplicate cleanup, health-coloured badge) — this release. |
+| 0.3.0 | Long Animation Frames attribution: measure *which* scripts — third-party domains and extensions' content scripts — are blocking pages, replacing permission-breadth guesswork for extension impact. |
 | Later | Cross-session persistence for UI state, a chronic-strain automation trigger, extension enable/disable, a custom toolbar icon, optional inner-scroll cap on long AI results. |

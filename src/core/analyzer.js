@@ -5,12 +5,16 @@
 import {
   IDLE_MINUTES,
   HEAVY_DOMAIN_TAB_COUNT,
+  HEAVY_HEAP_MB,
+  HEAVY_DOM_NODES,
   BLOCKING_WARN_MS,
   PERF_STALE_MS,
+  PERF_HIDDEN_STALE_MS,
   PERF_MIN_SAMPLES,
   BACKGROUND_BLOCKING_WARN_MS,
   LEAK_GROWTH_MB,
   LEAK_MIN_SPAN_MIN,
+  LEAK_FLOOR_SAMPLES,
   LCP_POOR_MS,
   INP_POOR_MS,
   CLS_POOR,
@@ -19,13 +23,21 @@ import {
 } from "./constants.js";
 import { computeHealth } from "./health.js";
 
-/** Collapse trivial URL differences so true duplicates group together. */
+/**
+ * Collapse trivial URL differences so true duplicates group together. Only the
+ * scheme and host are case-insensitive; path, query and fragment are kept exactly
+ * (video and document ids are case-sensitive, and many apps route by the fragment —
+ * Gmail's #inbox vs. #inbox/<message>). Duplicates feed a close action, so grouping
+ * two different pages would close a real tab, while missing a same-page pair that
+ * differs only by #anchor costs nothing.
+ */
 function normalizeUrl(raw) {
   try {
     const u = new URL(raw);
-    return (u.origin + u.pathname.replace(/\/$/, "") + u.search).toLowerCase();
+    const site = `${u.protocol}//${u.host}`.toLowerCase();
+    return site + u.pathname.replace(/\/$/, "") + u.search + u.hash;
   } catch {
-    return (raw || "").toLowerCase();
+    return raw || "";
   }
 }
 
@@ -47,7 +59,6 @@ const CHRONIC_KIND_LABELS = {
   jank: "jank",
   background: "background CPU",
   leak: "memory growth",
-  vitals: "poor vitals",
 };
 
 /**
@@ -77,17 +88,27 @@ function classifyExtension(ext) {
 }
 
 /**
- * Heuristic "likely resource weight" for a single tab, from readable signals.
- * Returns { score, reason }. Asleep (discarded) tabs score 0 — they're unloaded.
+ * Heuristic "likely resource weight" for a single tab, from readable signals —
+ * the probe's measurements (`live`) weighted highest. Returns { score, reason }.
+ * Asleep (discarded) tabs score 0 — they're unloaded.
  */
-function tabWeight(t, isIdle, crowded, blockingMs) {
+function tabWeight(t, isIdle, crowded, live) {
   if (t.discarded) return { score: 0, reason: "asleep" };
+
+  const blockingMs = live?.blockingMs || 0;
+  const heapMB = live?.jsHeapMB || 0;
+  const domNodes = live?.domNodes || 0;
 
   let score = 10; // simply being loaded means it occupies memory
   let reason = "loaded";
 
-  // Measured main-thread blocking is the strongest, most real signal we have.
-  if (blockingMs) score += Math.min(blockingMs / 10, 50);
+  // Measured main-thread blocking is the strongest, most real signal we have. A big
+  // JS heap or DOM comes next: both are real memory, and a huge DOM makes every
+  // style and layout pass slow. (The heap is the renderer's, so same-site tabs
+  // sharing a process can each show it — indicative, not exact.)
+  score += Math.min(blockingMs / 10, 50);
+  score += Math.min((heapMB / HEAVY_HEAP_MB) * 25, 40);
+  score += Math.min((domNodes / HEAVY_DOM_NODES) * 10, 15);
   if (t.audible) score += 20; // active audio/video decode is ongoing CPU
   if (isIdle && !t.active) score += 8; // loaded but untouched = wasted memory
   if (crowded) score += 4;
@@ -95,10 +116,17 @@ function tabWeight(t, isIdle, crowded, blockingMs) {
 
   // Pick the most informative label, measured signals first.
   if (blockingMs >= BLOCKING_WARN_MS) reason = "janky";
+  else if (heapMB >= HEAVY_HEAP_MB) reason = "high memory";
+  else if (domNodes >= HEAVY_DOM_NODES) reason = "huge DOM";
   else if (t.audible) reason = "playing media";
   else if (isIdle && !t.active) reason = "loaded · idle";
 
   return { score, reason };
+}
+
+/** Lowest heap reading among some series points — the level GC keeps coming back to. */
+function heapFloor(points) {
+  return Math.min(...points.map((p) => p.h));
 }
 
 /** Human "Xm ago" / "Xh Ym ago" from a millisecond delta. */
@@ -170,10 +198,14 @@ export function analyze(snapshot) {
   const now = snapshot.takenAt || Date.now();
   const idleMs = IDLE_MINUTES * 60 * 1000;
 
-  // A live perf report counts only if it's recent enough to still be true.
+  // A live perf report counts only if it's recent enough to still be true. Hidden
+  // tabs report as rarely as once a minute (timer throttling), so they're allowed
+  // a longer gap before their last report is dropped.
   const liveFor = (tabId) => {
     const l = perfLive[tabId];
-    return l && now - l.ts < PERF_STALE_MS ? l : null;
+    if (!l) return null;
+    const maxAge = l.hidden ? PERF_HIDDEN_STALE_MS : PERF_STALE_MS;
+    return now - l.ts < maxAge ? l : null;
   };
 
   // Each tab's URL is read several times below (host for grouping, exact origin to
@@ -264,15 +296,18 @@ export function analyze(snapshot) {
 
   const heavyDomains = domains.filter((d) => d.count >= HEAVY_DOMAIN_TAB_COUNT);
 
-  // "Likely heavy" tabs: score every loaded tab and keep the top of the list.
+  // "Likely heavy" tabs: score every loaded tab, heaviest first. The whole list is
+  // returned, not just the top few, so the panel can re-rank it (by cpu, memory…)
+  // and still surface the true heaviest tab before trimming to the rows it shows.
+  // Asleep tabs are skipped up front — they're unloaded, so never heavy.
   const heavyTabs = tabs
+    .filter((t) => !t.discarded)
     .map((t) => {
       const host = metaOf(t.url || t.pendingUrl || "").host;
       const crowded = (domainMap.get(host) || 0) >= HEAVY_DOMAIN_TAB_COUNT;
       const isIdle = t.lastAccessed && now - t.lastAccessed > idleMs;
       const live = liveFor(t.id);
-      const blockingMs = live ? live.blockingMs : 0;
-      const { score, reason } = tabWeight(t, isIdle, crowded, blockingMs);
+      const { score, reason } = tabWeight(t, isIdle, crowded, live);
       return {
         id: t.id,
         title: t.title || t.url || "",
@@ -280,20 +315,15 @@ export function analyze(snapshot) {
         discarded: !!t.discarded,
         audible: !!t.audible,
         idleMinutes: t.lastAccessed ? Math.round((now - t.lastAccessed) / 60000) : 0,
-        blockingMs,
+        blockingMs: live ? live.blockingMs : 0,
         jsHeapMB: live ? live.jsHeapMB : null,
+        domNodes: live ? live.domNodes : null,
         score,
         reason,
-        tab: t,
-        live,
+        stats: tabStats(t, live, now),
       };
     })
-    .filter((t) => t.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 8)
-    // Build the (relatively heavy) detail rows only for the 8 tabs we keep, not for
-    // every tab we just scored and discarded.
-    .map(({ tab, live, ...row }) => ({ ...row, stats: tabStats(tab, live, now) }));
+    .sort((a, b) => b.score - a.score);
 
   // --- Page-performance advisories ------------------------------------------
 
@@ -313,7 +343,9 @@ export function analyze(snapshot) {
 
   for (const t of tabs) {
     const l = liveFor(t.id);
-    if (!l) continue;
+    // An asleep tab isn't running, so its last report no longer describes anything
+    // (and with the longer hidden-tab allowance it could otherwise linger minutes).
+    if (!l || t.discarded) continue;
 
     if (l.jsHeapMB != null) {
       measuredHeapMB += l.jsHeapMB;
@@ -344,11 +376,16 @@ export function analyze(snapshot) {
       });
     }
 
+    // Memory growth: compare the heap's floor at the start and end of the series,
+    // not two single readings, so a GC dip or spike at either end can't fake (or
+    // hide) a climb.
     const series = l.heapSeries;
-    if (series && series.length >= 4) {
+    if (series && series.length >= LEAK_FLOOR_SAMPLES * 2) {
       const first = series[0];
       const last = series[series.length - 1];
-      const growthMB = last.h - first.h;
+      const growthMB =
+        heapFloor(series.slice(-LEAK_FLOOR_SAMPLES)) -
+        heapFloor(series.slice(0, LEAK_FLOOR_SAMPLES));
       const spanMin = (last.t - first.t) / 60000;
       if (growthMB >= LEAK_GROWTH_MB && spanMin >= LEAK_MIN_SPAN_MIN) {
         leaks.push({
@@ -369,11 +406,13 @@ export function analyze(snapshot) {
   leaks.sort((a, b) => b.growthMB - a.growthMB);
 
   // (d) Predict from per-origin history: heavy and/or poor Web Vitals. Skip
-  //     origins already shouting in the live list above.
+  //     origins already shouting in the live list above, and asleep tabs — a
+  //     discarded tab isn't running, so its site can't be straining anything.
   const warningOrigins = new Set(liveWarnings.map((w) => liveFor(w.id)?.origin));
   const seenOrigins = new Set();
   const predictions = [];
   for (const t of tabs) {
+    if (t.discarded) continue;
     const origin = metaOf(t.url || "").origin;
     if (!origin || seenOrigins.has(origin) || warningOrigins.has(origin)) continue;
     seenOrigins.add(origin);
@@ -383,7 +422,7 @@ export function analyze(snapshot) {
     const poorVitals = [];
     if (h.avgLcpMs >= LCP_POOR_MS) poorVitals.push("slow load");
     if (h.avgInpMs >= INP_POOR_MS) poorVitals.push("laggy input");
-    if ((h.maxCls || 0) >= CLS_POOR) poorVitals.push("layout shift");
+    if ((h.avgCls || 0) >= CLS_POOR) poorVitals.push("layout shift");
     const heavy = h.avgBlockingMs >= BLOCKING_WARN_MS;
 
     if (heavy || poorVitals.length) {
@@ -394,7 +433,7 @@ export function analyze(snapshot) {
       if (h.avgJsHeapMB != null) stats.push(["avg heap", `${h.avgJsHeapMB}MB`]);
       if (h.avgLcpMs != null) stats.push(["avg lcp", `${h.avgLcpMs}ms`]);
       if (h.avgInpMs != null) stats.push(["avg inp", `${h.avgInpMs}ms`]);
-      if (h.maxCls) stats.push(["max cls", h.maxCls]);
+      if (h.avgCls) stats.push(["avg cls", h.avgCls]);
       if (h.avgLoadMs != null) stats.push(["avg load", `${h.avgLoadMs}ms`]);
       predictions.push({
         origin,
@@ -413,10 +452,11 @@ export function analyze(snapshot) {
   // (e) Chronic offenders: origins the strain ledger has flagged again and again
   //     over time. This is the "continuously causing strain" surface — distinct
   //     from the live lists (a moment) and predictions (an average); it's about
-  //     PERSISTENCE. We mark which chronic origins are open right now so the UI
-  //     can offer to act on them.
+  //     PERSISTENCE. We mark which chronic origins are loaded right now (open and
+  //     not asleep) so the UI can offer to act on them.
   const openOrigins = new Set();
   for (const t of tabs) {
+    if (t.discarded) continue;
     const o = metaOf(t.url || "").origin;
     if (o) openOrigins.add(o);
   }
@@ -538,10 +578,6 @@ export function analyze(snapshot) {
       : 0,
   };
 
-  // "Issues" = redundant duplicate tabs + idle tabs. Drives the badge color.
-  const redundantDupes = duplicates.reduce((n, d) => n + (d.count - 1), 0);
-  const issues = redundantDupes + idleTabs.length;
-
   const health = computeHealth({
     memoryPercent: mem.usedPercent,
     tabCount: tabs.length,
@@ -549,8 +585,8 @@ export function analyze(snapshot) {
     leaks: leaks.length,
     liveJank: liveWarnings.length,
     heavyOrigins: predictions.filter((p) => p.heavy).length,
-    // Only count chronic offenders that are actually open right now — a repeat
-    // offender you've already closed isn't straining the browser this moment.
+    // Only count chronic offenders that are actually loaded right now — a repeat
+    // offender you've closed or put to sleep isn't straining the browser this moment.
     chronicOpen: chronic.filter((c) => c.open).length,
   });
 
@@ -576,6 +612,5 @@ export function analyze(snapshot) {
     health,
     memory: mem,
     chromeHeap,
-    issues,
   };
 }

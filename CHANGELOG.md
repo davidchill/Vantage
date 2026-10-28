@@ -1,5 +1,50 @@
 # Changelog
 
+## v0.2.6 — 2026-10-28
+
+An accuracy pass, driven by a full diagnostics review of the extension. The aim: what Vantage reports as slowing Chrome down should be **measured, current, and attributable** — not inflated by its own bookkeeping, distorted by Chrome's background throttling, or blind to tabs it never instrumented. Fixes 14 issues across the health verdict, memory signals, background-tab detection, tab-closing safety, and the worker's plumbing. Every fix was checked with scratch Node harnesses that load the real modules against a stubbed `chrome` API (66 checks), and each harness was also run against v0.2.5 to confirm it catches the old behavior.
+
+### Health verdict & chronic strain
+- **Strain is recorded on the alarm cadence only.** Debounced tab-event scans called `scan()` with `automate` defaulting to `true`, so the chronic-strain ledger and auto-management ran on every tab-event burst — a site could reach "chronic" (5 strained scans) in ~30s of tab switching, flipping the verdict to Strained. Event-driven scans are now badge-only (`scan({ automate: false })`); episode counts track elapsed time, not activity.
+- **Only measured strain feeds the ledger.** `strainedOriginsFrom` no longer folds history-based predictions (heavy / poor vitals) into the ledger. They were re-recorded every minute for any open — even asleep — tab of a once-bad site, so the ledger fed on its own past verdicts. Live jank, background drain, and memory growth remain; the `vitals` ledger kind is retired.
+- **Asleep tabs don't count.** Predictions and the chronic "open now" set skip discarded tabs, matching the explainer's "loaded this instant". Sleeping a tab now actually clears its contribution to the verdict.
+- **Fresh ledger.** Ledgers recorded by earlier versions were inflated, so the ledger moves to a new storage key (`strainLedger`); the old `strainHistory` key is removed on install/update (idempotent).
+- **Scan alarm re-checked on every worker start** (`ensureAlarm`). Chrome may clear alarms on browser restart, and the alarm is now the sole driver of the ledger and automation.
+
+### Web Vitals
+- **CLS measured per Core Web Vitals** — the worst session window (shifts grouped until a 1s gap or 5s total) instead of the sum of every shift over the page's life, which grew without bound on long-lived tabs (`perf-probe.js`).
+- **Per-origin history keeps a rolling `avgCls`** (EMA, 3 decimals) instead of an all-time `maxCls` that never decayed and permanently flagged a site for "layout shift" (`perf-store.js`; `ema()` gained a `digits` parameter). Stored `maxCls` values are ignored and dropped on each origin's next update.
+
+### Memory signals
+- **Heap series scoped to one document.** A tab's series resets on navigation or reload (new `sender.documentId`) or an origin change. Previously navigating a tab to a heavier site read as "+260 MB growth" — a false leak that, with the leak trigger set to *close*, could auto-close the tab.
+- **Prerendered and tearing-down documents ignored.** Reports whose `sender.documentLifecycle` isn't `active` are dropped, so Chrome's prerendered pages no longer mix their numbers into the tab or show the foreground tab as background drain.
+- **Floor-based leak detection.** Growth now compares the heap's low point (minimum of `LEAK_FLOOR_SAMPLES` = 5 samples) at each end of the series rather than two single readings, so GC sawtooth can't fake or hide a climb. Sampled about once a minute, 40 samples retained; flagged at ≥75 MB of floor growth over ≥10 min (`LEAK_MIN_SPAN_MIN`).
+- Confirmed by testing in desktop Chrome that `performance.memory` is precise and live (a review hypothesis that it refreshes only every ~20 minutes was disproved), so the leak cadence is tuned for precise-but-noisy readings.
+
+### Background tabs
+- **Throttling-aware blocking.** The probe now reports each window's length (`windowMs`), and `perf-store` normalizes blocking to a per-5s rate (`PERF_WINDOW_MS`). Chrome throttles long-hidden tabs to about one timer wake-up a minute, so a single 200ms task a minute used to count as "background tab using CPU" (severity 3), and per-origin averages mixed 5s and 60s windows. Normalization only scales *down* — a short window (the early report sent as a tab is hidden) isn't amplified.
+- **Longer staleness allowance for hidden tabs** (`PERF_HIDDEN_STALE_MS`, 3 min vs 60s). Once-a-minute reports no longer drop a draining tab out of the list — which also reset automation's sustain clock, so auto-sleep could never fire. An asleep tab's last report is ignored immediately (perf advisories and the JS HEAP gauge).
+- **Probe injected into already-open tabs on install/update** via `chrome.scripting.executeScript` (new **`scripting`** permission — no install warning; host access was already granted). Previously every open tab went unmeasured until reloaded, including after each update. Asleep tabs and Chrome's own updates are skipped; unscriptable pages fail quietly.
+- **Probe lifecycle.** Observers are created through a `watch()` helper and tracked; `stop()` disconnects them, clears the timer, and removes the visibility listener. A newly injected probe stops any earlier copy on the page (`window.__vantageProbe`, in the isolated world only), and an invalidated context now shuts down fully (it used to leave its visibility listener behind).
+
+### Likely Heavy Tabs
+- **Score includes measured JS heap and DOM size** (`HEAVY_HEAP_MB` 500, `HEAVY_DOM_NODES` 15,000), with new row reasons *high memory* and *k DOM nodes*. A 1.5 GB tab previously scored the same as a blank page (10) and ranked below a small pinned tab playing music (32). Live jank remains the strongest single signal.
+- **Sorts re-rank every loaded tab.** `analyze()` returns every loaded tab (score order) and the panel picks the top 8 *after* the user's sort (`topFor()`), so cpu/memory sorts surface the true heaviest tab; a `pick` option keeps "name" listing the heaviest 8 alphabetically. Detail rows are now built for every loaded tab, partly reversing the v0.2.3 deferral (negligible cost; the AI snapshot still takes the top 8 by score).
+
+### Duplicate tabs
+- **Exact address matching.** Only the scheme and host are lowercased; path, query, and `#fragment` are kept exactly. Gmail's `#inbox` vs `#inbox/<message>` (or a compose window) and case-differing video IDs are no longer "duplicates" that *purge dupes* would close.
+- **Purge protects pinned and audible tabs.** `closeExtras` keeps the best copy (pinned › active › audible › most recent) and never closes pinned or audible copies. Confirmation prompts and the section explainer say so.
+
+### Toolbar badge
+- **Colour follows the health verdict** — blue Good, amber Strained (dark text), red Heavy — and the icon's tooltip shows the verdict and its top factors. It used to turn red whenever any idle (even asleep) or duplicate tab existed, and never reflected real strain. Removed the now-unused `issues` field from `analyze()`.
+
+### Service worker plumbing
+- **Tab events filtered.** Only changes that can move the badge trigger a scan: tab created/removed, navigation (`url`), load complete, sleep/wake (`discarded`). Title, favicon, and audio updates and tab switches are ignored — a page retitling itself every second used to cause a full scan every second.
+- **Single write queue.** Every storage read-modify-write in the worker — perf flushes, closed-tab cleanup, and whole scans (strain ledger, automation tracker) — runs through one promise queue (`enqueue`), fixing lost updates when a tab closed mid-flush or two scans overlapped. The post-automation re-scan calls `runScan` directly, since it already holds the queue.
+
+### Help text
+- Explainers updated for the new behavior: memory growth (10+ min), chronic 🔁 (closed *or* asleep), exact duplicate matching and protected copies, and the heavy-tab signals and sorting.
+
 ## v0.2.5 — 2026-06-13
 
 A quality-of-life release: in-context help layered over the whole panel, plus clearer and more honest resource gauges. No change to the monitoring engine — this is about making the data already on screen easier to read and harder to misread.

@@ -53,7 +53,7 @@ export const SECTION_INFO = {
     interpret: [
       "⚠ blocking — milliseconds a page froze the main thread in the last 5s; over ~400ms feels janky.",
       "🌙 background CPU — a hidden tab still burning CPU where you can't see it.",
-      "📈 memory growth — heap climbing steadily over time, a possible leak.",
+      "📈 memory growth — the tab's memory has kept climbing for 10+ minutes without dropping back, a possible leak.",
       "Plain rows with no icon are predictions from this site's history, not live measurements.",
     ],
   },
@@ -63,24 +63,26 @@ export const SECTION_INFO = {
     interpret: [
       "×N — how many scans have flagged this site.",
       "streak — consecutive scans it stayed flagged.",
-      "🔴 open now means it's loaded this instant; 🔁 means seen recently but not currently open.",
+      "🔴 open now means it's loaded this instant; 🔁 means seen recently but not currently loaded (closed or asleep).",
     ],
   },
   heavy: {
     title: "Likely Heavy Tabs",
-    what: "A best-guess ranking of which tabs are using the most resources, scored from readable signals — measured jank, audio playback, and idle-but-loaded memory.",
+    what: "A best-guess ranking of which tabs are using the most resources, scored from readable signals — measured jank, JS heap and DOM size, plus audio playback and idle-but-loaded tabs.",
     interpret: [
-      "It's an estimate: Chrome doesn't expose true per-tab memory without deep profiling.",
+      "It's an estimate: the heap figure belongs to the page's whole renderer process, so tabs from the same site can share it.",
       "Use the ⌖ deep-profile button on a row for real heap/CPU numbers.",
-      "A ⚠ note means the tab actually janked; otherwise the score is inferred.",
+      "A ⚠ note means the tab actually janked; 'high memory' and 'k DOM nodes' flag measured size.",
+      "Sorting by cpu or memory re-ranks every loaded tab, not just the rows already shown.",
     ],
   },
   dupes: {
     title: "Duplicate Tabs",
-    what: "Tabs open to the same page. Each set keeps one copy and counts the extras.",
+    what: "Tabs open to the exact same address. Each set keeps one copy and counts the extras.",
     interpret: [
       "×N is the total number of copies in that set.",
-      "'purge dupes' closes every redundant copy across all sets at once.",
+      "Addresses must match exactly, including anything after # — many apps (like Gmail) use it to show different pages.",
+      "'purge dupes' closes every redundant copy across all sets at once. Pinned and audible copies are always kept.",
     ],
   },
   idle: {

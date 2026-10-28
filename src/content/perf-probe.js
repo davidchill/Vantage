@@ -6,12 +6,19 @@
 // cheap enough to run on every tab continuously.
 //
 // Windowed counters (longTasks, blocking) accumulate between reports and reset
-// each time. Web Vitals (LCP/CLS/INP) and heap/DOM are cumulative/point-in-time
-// gauges of the page's current state.
+// each time. Each report also carries its window length (windowMs): Chrome stretches
+// the 5s timer to about a minute in long-hidden tabs, and the worker normalizes by
+// it. Web Vitals (LCP/CLS/INP) and heap/DOM are cumulative/point-in-time gauges of
+// the page's current state.
 
 (() => {
   // Only the top document reports, to avoid double-counting iframes.
   if (window.top !== window) return;
+
+  // One probe per page. On install/update the worker also injects the probe into
+  // tabs that are already open, which can land on a page that already runs one; the
+  // newest instance stops the earlier one and takes over.
+  window.__vantageProbe?.stop();
 
   const REPORT_MS = 5000; // probe report cadence (the panel re-renders on the same beat)
 
@@ -19,58 +26,74 @@
   let longTasks = 0;
   let blockingMs = 0;
   let blockingHiddenMs = 0; // blocking that happened while the tab was hidden
+  let windowStart = performance.now(); // when the current window opened
 
   // Cumulative Web Vitals (persist for the page's life)
   let lcpMs = null; // Largest Contentful Paint
-  let cls = 0; // Cumulative Layout Shift
+  let cls = 0; // Cumulative Layout Shift (worst session window so far)
   let inpMs = 0; // worst interaction latency (INP approximation)
 
-  // Long tasks — and whether they ran while the page was backgrounded.
-  try {
-    new PerformanceObserver((list) => {
-      for (const e of list.getEntries()) {
-        longTasks++;
-        const over = Math.max(0, e.duration - 50);
-        blockingMs += over;
-        if (document.visibilityState === "hidden") blockingHiddenMs += over;
-      }
-    }).observe({ type: "longtask", buffered: true });
-  } catch {
-    /* Long Tasks API unsupported here */
+  // Every PerformanceObserver the probe opens, so stop() can disconnect them all.
+  const observers = [];
+
+  /** Observe one entry type, replaying entries recorded before we registered. */
+  function watch(type, onEntries, opts = {}) {
+    try {
+      const o = new PerformanceObserver((list) => onEntries(list.getEntries()));
+      o.observe({ type, buffered: true, ...opts });
+      observers.push(o);
+    } catch {
+      /* entry type unsupported here */
+    }
   }
+
+  // Long tasks — and whether they ran while the page was backgrounded.
+  watch("longtask", (entries) => {
+    for (const e of entries) {
+      longTasks++;
+      const over = Math.max(0, e.duration - 50);
+      blockingMs += over;
+      if (document.visibilityState === "hidden") blockingHiddenMs += over;
+    }
+  });
 
   // Largest Contentful Paint — keep the latest reported value.
-  try {
-    new PerformanceObserver((list) => {
-      const entries = list.getEntries();
-      const last = entries[entries.length - 1];
-      if (last) lcpMs = Math.round(last.startTime);
-    }).observe({ type: "largest-contentful-paint", buffered: true });
-  } catch {
-    /* unsupported */
-  }
+  watch("largest-contentful-paint", (entries) => {
+    const last = entries[entries.length - 1];
+    if (last) lcpMs = Math.round(last.startTime);
+  });
 
-  // Cumulative Layout Shift — sum shifts not caused by recent user input.
-  try {
-    new PerformanceObserver((list) => {
-      for (const e of list.getEntries()) {
-        if (!e.hadRecentInput) cls += e.value;
+  // Cumulative Layout Shift, as Core Web Vitals defines it: shifts not caused by
+  // recent input are grouped into session windows (a window closes after a 1s gap
+  // or 5s total) and CLS is the worst window. Summing every shift over the page's
+  // life instead grows without bound on long-lived tabs.
+  let sessionCls = 0;
+  let sessionStart = 0;
+  let sessionLast = 0;
+  watch("layout-shift", (entries) => {
+    for (const e of entries) {
+      if (e.hadRecentInput) continue;
+      if (sessionCls && e.startTime - sessionLast < 1000 && e.startTime - sessionStart < 5000) {
+        sessionCls += e.value;
+      } else {
+        sessionCls = e.value;
+        sessionStart = e.startTime;
       }
-    }).observe({ type: "layout-shift", buffered: true });
-  } catch {
-    /* unsupported */
-  }
+      sessionLast = e.startTime;
+      if (sessionCls > cls) cls = sessionCls;
+    }
+  });
 
   // Interaction latency — track the worst real interaction (INP approximation).
-  try {
-    new PerformanceObserver((list) => {
-      for (const e of list.getEntries()) {
+  watch(
+    "event",
+    (entries) => {
+      for (const e of entries) {
         if (e.interactionId && e.duration > inpMs) inpMs = Math.round(e.duration);
       }
-    }).observe({ type: "event", buffered: true, durationThreshold: 40 });
-  } catch {
-    /* unsupported */
-  }
+    },
+    { durationThreshold: 40 }
+  );
 
   // Resource timing — accumulated incrementally as entries arrive, rather than
   // re-scanning the whole (ever-growing) resource buffer on every report. Count and
@@ -82,24 +105,20 @@
   let transferBytes = 0;
   const resourceHosts = new Set();
   const selfHost = location.hostname;
-  try {
-    new PerformanceObserver((list) => {
-      for (const r of list.getEntries()) {
-        resourceCount++;
-        transferBytes += r.transferSize || 0;
-        if (resourceHosts.size < 200) {
-          try {
-            const h = new URL(r.name).hostname;
-            if (h && h !== selfHost) resourceHosts.add(h);
-          } catch {
-            /* non-URL resource name */
-          }
+  watch("resource", (entries) => {
+    for (const r of entries) {
+      resourceCount++;
+      transferBytes += r.transferSize || 0;
+      if (resourceHosts.size < 200) {
+        try {
+          const h = new URL(r.name).hostname;
+          if (h && h !== selfHost) resourceHosts.add(h);
+        } catch {
+          /* non-URL resource name */
         }
       }
-    }).observe({ type: "resource", buffered: true });
-  } catch {
-    /* Resource Timing API unsupported here */
-  }
+    }
+  });
 
   // DOM node count is a full-tree walk — comparatively expensive — so sample it on a
   // slower cadence (every DOM_SAMPLE_EVERY reports) and never while hidden, where it
@@ -114,7 +133,7 @@
 
   function buildReport() {
     let jsHeapMB = null;
-    const mem = performance.memory; // Chrome-only; coarse/quantized but useful.
+    const mem = performance.memory; // Chrome-only: this renderer's JS heap.
     if (mem && mem.usedJSHeapSize) {
       jsHeapMB = Math.round(mem.usedJSHeapSize / 1048576);
     }
@@ -144,6 +163,7 @@
       longTasks,
       blockingMs: Math.round(blockingMs),
       blockingHiddenMs: Math.round(blockingHiddenMs),
+      windowMs: Math.round(performance.now() - windowStart),
       jsHeapMB,
       domNodes,
       resourceCount,
@@ -162,19 +182,29 @@
       chrome.runtime.sendMessage({ type: "perf-report", data });
     } catch {
       // Extension context invalidated (reloaded/updated) — stop reporting.
-      clearInterval(timer);
+      stop();
       return;
     }
     // Reset the windowed counters; vitals stay cumulative.
     longTasks = 0;
     blockingMs = 0;
     blockingHiddenMs = 0;
+    windowStart = performance.now();
+  }
+
+  // Capture late activity right before the page is backgrounded/unloaded.
+  function onVisibilityChange() {
+    if (document.visibilityState === "hidden") report();
+  }
+
+  /** Shut this probe down completely (context invalidated, or a newer probe took over). */
+  function stop() {
+    clearInterval(timer);
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+    for (const o of observers) o.disconnect();
   }
 
   const timer = setInterval(report, REPORT_MS);
-
-  // Capture late activity right before the page is backgrounded/unloaded.
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") report();
-  });
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  window.__vantageProbe = { stop };
 })();
