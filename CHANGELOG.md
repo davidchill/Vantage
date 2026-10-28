@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.4.0 — 2026-10-28
+
+New capability: **real per-tab load from the deep profiler.** Stable Chrome gives extensions no per-tab CPU figure, and until now the ⌖ deep profile read Chrome's DevTools Performance counters once — so "Xs total script" meant work done since the page loaded, not how busy the tab is now. It now takes two readings a few seconds apart and reports the rate: how much of that window the tab's main thread spent busy, and on what.
+
+Counters were chosen by testing, not by name. Against headless Chrome 156 (a throwaway profile, separate from the user's browser), a page built to keep its main thread 50% busy read **49.9%** from `TaskDuration` and 49.6% from `ScriptDuration`. `ThreadTime` and `ProcessTime` read 70% and 45% on the same page, so despite their names they aren't used as a "CPU %". End-to-end, the real service-worker code driven against real Chrome (through a `chrome.debugger` → CDP shim) measured a designed-50% page at **50.1%**, a layout-thrashing page at exactly its designed 9,000 layouts in 3s, and an idle page at 0%.
+
+### Profiler (`service-worker.js`, new `src/core/profile.js`)
+- **Two-sample measurement.** `deepProfile()` attaches the debugger, enables the Performance domain, reads `Performance.getMetrics`, waits `DEEP_PROFILE_SAMPLE_MS` (3s), reads again, and detaches (always, in `finally`). It also returns the tab's title.
+- **`summarizeProfile(before, after)`** (pure, testable): over the `Timestamp` window, returns main-thread busy % (`TaskDuration`) and its breakdown — script (`ScriptDuration`), layout (`LayoutDuration`), style (`RecalcStyleDuration`), and other — plus layouts in the window, and point-in-time JS heap, DOM nodes, listeners, frames, and **ad frames** (`AdSubframes`: iframes Chrome itself has tagged as ads). Missing counters come back as `null` so the UI hides them; a zero-length window can't divide by zero.
+- Replaced the old one-shot fields (`scriptSeconds`, `taskSeconds`, cumulative `layoutCount`, `documents`) with the windowed ones.
+
+### Panel
+- **Result card** leads with the load — e.g. "**62%** main-thread busy (heavy) over 3s — script 48% · layout 9.1% · other 4.7%" — amber at 50%+, with a plain word (idle / light / moderate / heavy) and components under 1% hidden. A second line has heap, DOM nodes, listeners, frames (with Chrome-tagged ads), and layouts; the tab's title (escaped) heads the card; a note says the figure is the tab's renderer main thread, which same-site tabs sharing a process can add to.
+- **⌖ on Page Performance rows** (janky, background-drain, memory-growth) as well as Likely Heavy Tabs, so an estimate can be confirmed with a measurement on the spot (`heavyActions` → `profileActions`).
+- **One profile at a time**: a second click mid-sample is ignored rather than failing to attach. The waiting message says how long it takes and that Chrome shows its "debugging this tab" banner meanwhile.
+
+### Help text
+- Likely Heavy Tabs and Page Performance explainers describe what ⌖ measures and that it shows the debug banner while it does.
+
 ## v0.3.0 — 2026-10-28
 
 New feature: **script attribution**. Until now Vantage could say a page was janky but not *what* on it was responsible. Using Chrome's Long Animation Frames API (LoAF, Chrome 123+), the probe now records which script sources run in slow frames, so Vantage can name the domain — often an ad or analytics network — behind a page's main-thread cost and behind a specific janky moment.

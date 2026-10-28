@@ -1,6 +1,6 @@
 // Shared configuration for the monitoring core.
 // manifest.json is the canonical version for Chrome; keep VERSION in sync with it.
-export const VERSION = "0.3.0";
+export const VERSION = "0.4.0";
 
 // A tab not accessed in this many minutes is flagged as "idle".
 export const IDLE_MINUTES = 60;
@@ -65,6 +65,10 @@ export const LEAK_MIN_SPAN_MIN = 10;
 export const LEAK_FLOOR_SAMPLES = 5; // samples whose minimum forms each end's floor
 export const HEAP_SERIES_MAX = 40; // samples retained per tab (~40 min at the cadence below)
 export const HEAP_SERIES_MIN_GAP_MS = 60000; // downsample cadence (~1 min)
+
+// Deep profiler: how long to watch a tab between its two Performance readings.
+// Long enough to average out a single burst; the debug banner shows meanwhile.
+export const DEEP_PROFILE_SAMPLE_MS = 3000;
 
 // Script attribution (Long Animation Frames): a source is named as a tab's culprit
 // only with at least this much attributed script time (in the window, or page life).

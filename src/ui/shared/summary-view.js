@@ -205,9 +205,12 @@ function tabActions(t) {
   return `<span class="acts">${sleep}<button class="act danger" data-act="close" data-id="${t.id}" title="Close tab">✕</button></span>`;
 }
 
-/** Heavy-tab controls: deep-profile (real metrics) + sleep + close. */
-function heavyActions(t) {
-  const profile = `<button class="act" data-act="profile" data-id="${t.id}" title="Deep profile — real heap/CPU via DevTools (flashes a debug banner)">⌖</button>`;
+/**
+ * Deep-profile + sleep + close — for rows where measuring the tab's real load is
+ * the natural next step (Likely Heavy Tabs, Page Performance).
+ */
+function profileActions(t) {
+  const profile = `<button class="act" data-act="profile" data-id="${t.id}" title="Deep profile — measure this tab's real main-thread load over a few seconds (shows a debug banner meanwhile)">⌖</button>`;
   const sleep = t.discarded
     ? ""
     : `<button class="act" data-act="sleep" data-id="${t.id}" title="Discard (sleep) tab">⏾</button>`;
@@ -312,7 +315,7 @@ export function renderSummary(
           "warn",
           `🌙 ${esc(b.title)}`,
           `bg-cpu ${b.blockingHiddenMs}ms${b.culprit ? ` · ${culpritChip(b.culprit)}` : ""}`,
-          tabActions(b),
+          profileActions(b),
           b
         )
       );
@@ -328,7 +331,7 @@ export function renderSummary(
           `⚠ ${a.blockingMs}ms${
             a.culprit ? ` · ${culpritChip(a.culprit)}` : a.jsHeapMB != null ? ` · ${a.jsHeapMB}M` : ""
           }`,
-          tabActions(a),
+          profileActions(a),
           a
         )
       );
@@ -341,7 +344,7 @@ export function renderSummary(
           "warn",
           `📈 ${esc(lk.title)}`,
           `+${lk.growthMB}M/${lk.spanMin}m → ${lk.currentMB}M`,
-          tabActions(lk),
+          profileActions(lk),
           lk
         )
       );
@@ -384,7 +387,7 @@ export function renderSummary(
     else if (t.reason === "loaded · idle") note = formatIdle(t.idleMinutes);
     else note = "loaded";
     if (t.jsHeapMB != null) note += ` · ${t.jsHeapMB}M`;
-    return lineRow(`ht:${t.id}`, expanded, t.blockingMs >= warnMs ? "warn" : "", esc(t.title), note, heavyActions(t), t);
+    return lineRow(`ht:${t.id}`, expanded, t.blockingMs >= warnMs ? "warn" : "", esc(t.title), note, profileActions(t), t);
   });
 
   // ── Duplicates / idle / domains ─────────────────────────────────────────

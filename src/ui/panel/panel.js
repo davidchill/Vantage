@@ -3,7 +3,7 @@
 // interval instead of only when opened.
 
 import { runAndRender, renderSummary, advanceSort, esc } from "../shared/summary-view.js";
-import { VERSION } from "../../core/constants.js";
+import { VERSION, DEEP_PROFILE_SAMPLE_MS } from "../../core/constants.js";
 import {
   sleepTab,
   closeTabs,
@@ -32,30 +32,65 @@ function showDeep(html) {
     `<button class="deep-close" data-act="deep-close" title="Dismiss">✕</button>` + html;
 }
 
-function formatDeep(m) {
-  const parts = [];
-  if (m.jsHeapMB != null)
-    parts.push(
-      `<b>${m.jsHeapMB} MB</b> JS heap${m.jsHeapTotalMB ? ` / ${m.jsHeapTotalMB} MB` : ""}`
-    );
-  if (m.nodes != null) parts.push(`${m.nodes.toLocaleString()} DOM nodes`);
-  if (m.listeners != null) parts.push(`${m.listeners.toLocaleString()} listeners`);
-  if (m.frames != null) parts.push(`${m.frames} frames`);
-  if (m.scriptSeconds != null) parts.push(`${m.scriptSeconds}s total script`);
-  if (m.layoutCount != null) parts.push(`${m.layoutCount} layouts`);
-  return `<div class="deep-title">Deep profile (real metrics)</div><div class="deep-body">${
-    parts.join(" · ") || "no metrics returned"
-  }</div>`;
+/** A main thread's load in words, so the number reads at a glance. */
+function loadWord(pct) {
+  if (pct >= 50) return "heavy";
+  if (pct >= 25) return "moderate";
+  if (pct >= 5) return "light";
+  return "idle";
 }
 
+const fmtPct = (p) => `${p < 10 ? p.toFixed(1) : Math.round(p)}%`;
+
+function formatDeep(m) {
+  const title = `<div class="deep-title">Deep profile — ${esc(m.title)}</div>`;
+  let busy = "";
+  if (m.mainThreadPct != null) {
+    const mix = [
+      ["script", m.scriptPct],
+      ["layout", m.layoutPct],
+      ["style", m.stylePct],
+      ["other", m.otherPct],
+    ]
+      .filter(([, p]) => p != null && p >= 1)
+      .map(([k, p]) => `${k} ${fmtPct(p)}`)
+      .join(" · ");
+    busy =
+      `<div><b class="${m.mainThreadPct >= 50 ? "hot" : ""}">${fmtPct(m.mainThreadPct)}</b> ` +
+      `main-thread busy (${loadWord(m.mainThreadPct)}) over ${m.sampleSeconds}s${mix ? ` — ${mix}` : ""}</div>`;
+  }
+  const facts = [];
+  if (m.jsHeapMB != null)
+    facts.push(`<b>${m.jsHeapMB} MB</b> JS heap${m.jsHeapTotalMB ? ` / ${m.jsHeapTotalMB} MB` : ""}`);
+  if (m.nodes != null) facts.push(`${m.nodes.toLocaleString()} DOM nodes`);
+  if (m.listeners != null) facts.push(`${m.listeners.toLocaleString()} listeners`);
+  if (m.frames != null) facts.push(`${m.frames} frames${m.adFrames ? ` (${m.adFrames} ads)` : ""}`);
+  if (m.layouts) facts.push(`${m.layouts} layouts`);
+  const factsHtml = facts.length ? `<div class="deep-facts">${facts.join(" · ")}</div>` : "";
+  const note = busy
+    ? `<div class="deep-note">Measured on the tab's renderer main thread; same-site tabs sharing a process can add to it.</div>`
+    : "";
+  return `${title}<div class="deep-body">${busy + factsHtml || "no metrics returned"}${note}</div>`;
+}
+
+// One profile at a time — a second click mid-sample would fail to attach anyway.
+let profiling = false;
+
 async function runDeepProfile(tabId) {
-  showDeep(`<div class="deep-title">Deep profile</div><div class="deep-body">profiling… a debug banner flashes on that tab</div>`);
+  if (profiling) return;
+  profiling = true;
+  const secs = DEEP_PROFILE_SAMPLE_MS / 1000;
+  showDeep(
+    `<div class="deep-title">Deep profile</div><div class="deep-body">measuring for ${secs}s… Chrome shows a "debugging this tab" banner on that tab meanwhile</div>`
+  );
   try {
     const resp = await chrome.runtime.sendMessage({ type: "deep-profile", tabId });
     if (resp?.ok) showDeep(formatDeep(resp.metrics));
     else showDeep(`Profile failed: ${esc(resp?.error || "unknown error")}`);
   } catch (err) {
     showDeep(`Profile failed: ${esc(String(err.message || err))}`);
+  } finally {
+    profiling = false;
   }
 }
 

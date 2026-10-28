@@ -7,12 +7,14 @@ import { analyze } from "../core/analyzer.js";
 import { recordPerfReports, dropLiveTab } from "../core/perf-store.js";
 import { recordStrain } from "../core/strain-history.js";
 import { runAutomation } from "../core/automation.js";
+import { summarizeProfile } from "../core/profile.js";
 import {
   ALARM_NAME,
   SCAN_INTERVAL_MINUTES,
   PERF_FLUSH_MS,
   PERF_FLUSH_MAX_BATCH,
   LEGACY_STRAIN_HISTORY_KEY,
+  DEEP_PROFILE_SAMPLE_MS,
 } from "../core/constants.js";
 
 // Every storage update the worker makes is a read-modify-write of a whole object
@@ -191,32 +193,25 @@ function queuePerfReport(tabId, docId, data) {
 }
 
 /**
- * Attach the DevTools protocol to one tab, read real Performance metrics, then
- * detach. This briefly shows Chrome's "debugging this tab" banner — by design.
+ * Attach the DevTools protocol to one tab and read its Performance metrics twice,
+ * DEEP_PROFILE_SAMPLE_MS apart. The counters are cumulative since page load, so the
+ * difference is what says how busy the tab is right now (see profile.js). This
+ * shows Chrome's "debugging this tab" banner for the sample window — by design.
  */
 async function deepProfile(tabId) {
   const target = { tabId };
+  const tab = await chrome.tabs.get(tabId);
   await chrome.debugger.attach(target, "1.3");
   try {
     await chrome.debugger.sendCommand(target, "Performance.enable");
-    const { metrics } = await chrome.debugger.sendCommand(
-      target,
-      "Performance.getMetrics"
-    );
-    const m = Object.fromEntries(metrics.map((x) => [x.name, x.value]));
-    const mb = (bytes) => (bytes ? Math.round(bytes / 1048576) : null);
-    return {
-      jsHeapMB: mb(m.JSHeapUsedSize),
-      jsHeapTotalMB: mb(m.JSHeapTotalSize),
-      nodes: m.Nodes ?? null,
-      listeners: m.JSEventListeners ?? null,
-      documents: m.Documents ?? null,
-      frames: m.Frames ?? null,
-      layoutCount: m.LayoutCount ?? null,
-      recalcStyleCount: m.RecalcStyleCount ?? null,
-      scriptSeconds: m.ScriptDuration != null ? +m.ScriptDuration.toFixed(2) : null,
-      taskSeconds: m.TaskDuration != null ? +m.TaskDuration.toFixed(2) : null,
+    const read = async () => {
+      const { metrics } = await chrome.debugger.sendCommand(target, "Performance.getMetrics");
+      return Object.fromEntries(metrics.map((x) => [x.name, x.value]));
     };
+    const before = await read();
+    await new Promise((resolve) => setTimeout(resolve, DEEP_PROFILE_SAMPLE_MS));
+    const after = await read();
+    return { title: tab.title || tab.url || "", ...summarizeProfile(before, after) };
   } finally {
     await chrome.debugger.detach(target).catch(() => {});
   }

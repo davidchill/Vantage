@@ -58,6 +58,7 @@ export const SECTION_INFO = {
       "🌙 background CPU — a hidden tab still burning CPU where you can't see it.",
       "📈 memory growth — the tab's memory has kept climbing for 10+ minutes without dropping back, a possible leak.",
       "A site name after the ⚠ or bg-cpu time is the script source that ran the most in that window (via Long Animation Frames). Expand the row for the top three.",
+      "⌖ on a row measures that tab's real main-thread load over 3 seconds — the ground truth behind these estimates.",
       "Plain rows with no icon are predictions from this site's history, not live measurements.",
     ],
   },
@@ -75,7 +76,7 @@ export const SECTION_INFO = {
     what: "A best-guess ranking of which tabs are using the most resources, scored from readable signals — measured jank, JS heap and DOM size, plus audio playback and idle-but-loaded tabs.",
     interpret: [
       "It's an estimate: the heap figure belongs to the page's whole renderer process, so tabs from the same site can share it.",
-      "Use the ⌖ deep-profile button on a row for real heap/CPU numbers.",
+      "⌖ deep-profiles a tab: two readings 3s apart show how busy its main thread really is, and with what (script, layout, style), plus exact heap and DOM figures. Chrome shows a 'debugging this tab' banner while it measures.",
       "A ⚠ note means the tab actually janked; 'high memory' and 'k DOM nodes' flag measured size.",
       "Sorting by cpu or memory re-ranks every loaded tab, not just the rows already shown.",
     ],
