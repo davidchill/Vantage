@@ -65,6 +65,10 @@ const SYSTEM_PROMPT = [
   "say what to do (sleep it, close duplicates, disable an extension, reload a leaking tab).",
   "When a tab has a culprit or topScript (the script source that ran the most, measured via",
   "Long Animation Frames — often an ad or analytics domain), name it as the likely cause.",
+  "measuredCpu, when present, is each tab's real main-thread load measured over 3 seconds",
+  "via DevTools — ground truth that outranks the heavyTabs estimate. A background tab over",
+  "~5% is being kept awake (Chrome throttles hidden tabs to about 1%) and is a prime suspect.",
+  "Its otherPct is mostly async JavaScript Chrome doesn't count as script, so treat it as script.",
   "Rank by real impact — measured jank, background CPU, and memory growth matter most;",
   "idle/duplicate cleanup is lower. If the browser looks healthy, say so plainly and keep",
   "suggestions light. Do not invent data that isn't in the snapshot. Be concise and",
@@ -87,6 +91,27 @@ function buildSnapshot(summary, cpuPercent) {
       totalGB: +(summary.memory.capacityBytes / 1024 ** 3).toFixed(1),
     },
     totals: summary.totals,
+    // Tab CPU sweep: measured, not estimated — sent only while it's fresh.
+    measuredCpu:
+      summary.cpu && !summary.cpu.stale
+        ? {
+            minutesAgo: summary.cpu.ageMin,
+            busiestTabs: pick(
+              summary.cpu.rows.filter((r) => r.mainThreadPct >= 1),
+              (r) => ({
+                title: r.title,
+                mainThreadBusyPct: r.mainThreadPct,
+                scriptPct: r.scriptPct,
+                otherPct: r.otherPct,
+                layoutAndStylePct: +((r.layoutPct || 0) + (r.stylePct || 0)).toFixed(1),
+                background: r.background,
+                audible: r.audible || undefined,
+                adFrames: r.adFrames || undefined,
+                jsHeapMB: r.jsHeapMB,
+              })
+            ),
+          }
+        : undefined,
     heavyTabs: pick(summary.heavyTabs, (t) => ({
       title: t.title,
       reason: t.reason,

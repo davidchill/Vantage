@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.5.0 — 2026-10-28
+
+New capability: **Tab CPU — every tab's real load, background tabs included.** This is the first release tested in real Chrome with the extension loaded: Chrome 156, headless, a throwaway profile separate from the user's browser, the unpacked extension loaded over the DevTools pipe (`Extensions.loadUnpacked`). That answered the questions v0.3.0 left open and exposed a blind spot:
+
+- **Script attribution works.** The content-script probe receives Long Animation Frame entries, and it attributed a cross-origin script served without CORS headers (like a typical ad tag) to its host.
+- **Chrome tells a page nothing about work done while it's hidden.** A background tab whose timers kept it 12% busy produced no `longtask` and no `long-animation-frame` entries — in the page's own main world too — and none were delivered when it came back to the front. So the probe's background-drain signal (`blockingHiddenMs`) can't fire in current Chrome, and Page Performance read "all clear" while a background tab was burning CPU.
+- **Chrome caps hidden tabs' timers.** A hidden tab's timers ran at full speed for roughly 10–20s, then were budget-throttled to about 1% CPU. Work that isn't timer-driven — media, network replies, messages, workers — isn't capped this way.
+- **The deep profiler's counter sees hidden tabs exactly.** `TaskDuration` matched a hidden tab's real work in every window (12% → 1.2% → 0%), making the profiler's two-reading method the right tool for background tabs.
+
+The planned cross-tab LoAF view (roadmap 0.4.x) could only ever have covered on-screen time, so this replaces it.
+
+Verified with 35 new harness checks (138 in all, earlier suites unchanged) against a scripted `chrome.debugger` — a hung tab, a refused attach, an attach that lands late, a minimized window, overlapping clicks, the tab cap — and end-to-end in real Chrome: a background tab kept awake by network replies read **29.8%** and was flagged, a background timer-driven tab read 0% (throttled), the on-screen tab 0.1%, a hung tab was skipped as unresponsive with the whole sweep done in 5.0s, a second click mid-sweep was refused, no tab was left attached, and System Status read "1 background tab using CPU".
+
+### Tab CPU sweep (`service-worker.js`)
+- **`measure-all`** → `measureAllTabs()` reads every loaded `http(s)` tab — asleep tabs and Chrome's own pages are left out — up to `CPU_SWEEP_MAX_TABS` (40), on-screen and audible tabs first, then the most recently used. Each tab is attached, read, given its 3s window, read again, all side by side: a sweep costs one window however many tabs are open, and a slow tab never stretches another's window. Everything attached is detached in `finally`.
+- **Background** means not its window's showing tab, or its window is minimized (`chrome.windows.getAll`) — when Chrome treats the page as hidden.
+- **A deadline on every DevTools call** (`withTimeout`, 5s). A hung page's main thread never answers; it's reported "page unresponsive" rather than stalling the sweep. An attach that completes after its deadline is detached as soon as it lands, so no debugging banner is left behind.
+- **One measurement at a time.** The deep profiler is now a one-tab sweep through the same `sampleTabs()`, which refuses a second run while one holds the debugger ("another measurement is still running") — Chrome allows one attach per tab.
+- The result is saved to `storage.session` (`CPU_SWEEP_KEY`) and a badge refresh is scheduled.
+
+### Analyzer & health
+- The collector reads the latest sweep; `measuredCpu()` joins it to the tabs still open. Tabs closed, put to sleep, or moved to another origin since are dropped (their reading no longer describes them); titles come from the live tab; rows are busiest first, with detail stats and plain-language notes.
+- **Flags:** 25%+ busy (`CPU_BUSY_WARN_PCT`) for any tab; 5%+ (`CPU_BG_WARN_PCT`) for a background tab, since Chrome throttles hidden tabs to about 1% — except tabs playing audio, where background work is expected.
+- **Health:** a fresh sweep's flagged background tabs feed the existing "background tab using CPU" factor, counted once per tab if the probe also reported it. After `CPU_SWEEP_STALE_MIN` (10 min) a sweep is shown as stale and stops counting.
+
+### Panel
+- **Tab CPU section** above Page Performance. A **measure** button that's always there, even before the first sweep (`section()` gained `slotWhenEmpty`); a note like "5 tabs · 2m ago · 1 skipped" with skip reasons on hover; rows at 1%+ busiest first, 🌙 for background, 🔊 for audio, the ad-frame count, a warning highlight when flagged and fresh, and ⌖ / ⏾ / ✕. Expanding a row shows the busy % and load word, what the time went to, heap, DOM nodes, listeners, frames (ads), layouts, tab state, when measured, and notes ("Busy in the background…", layout-heavy, ad frames not counted). Shows "measuring…" while a sweep runs; a profile and a sweep can't overlap.
+- **Detail layout fix (every section):** the key/value grid used `1fr 1fr`, so a long value pushed its column past half the panel and was cut off. Columns are now `minmax(0, 1fr)` and values wrap. Explanatory sentences get a new wrapping `notes` block; the one-line `bullets` list stays for titles and sources.
+
+### Async JavaScript isn't "script" to Chrome
+- Tested in real Chrome: the same 50% load read `ScriptDuration` 50% when run in a timer callback but **0%** after an `await` or in `.then` (`TaskDuration` 50% both). So "other" in the busy-time breakdown is often mostly async script. When "other" outweighs script, the deep-profile card and Tab CPU details say why. The shared formatters (`loadWord`, `fmtPct`, `busyMix`, `mostlyUnlabelled`) moved to `profile.js`.
+
+### AI Analysis
+- The snapshot gains `measuredCpu` (fresh sweeps only): the busiest tabs with busy %, script / other / layout+style, background, audio, ad frames, and heap. The system prompt calls it ground truth that outranks the heavyTabs estimate, flags background tabs over ~5%, and explains that `otherPct` is mostly async script.
+
+### Help text
+- New Tab CPU ⓘ. The Page Performance ⓘ now says 🌙 rows rarely appear in current Chrome and points to measure; the System Status tooltip mentions measured background tabs; the service worker's header comment no longer describes a popup cache.
+
+### Known gap
+- Background-drain detection from the probe is kept, since browsers on older Chromium may still report hidden-tab long tasks — but in current Chrome it doesn't fire, and neither does auto-management's **background CPU drain** trigger, which depends on it. The memory-leak trigger is unaffected.
+
 ## v0.4.0 — 2026-10-28
 
 New capability: **real per-tab load from the deep profiler.** Stable Chrome gives extensions no per-tab CPU figure, and until now the ⌖ deep profile read Chrome's DevTools Performance counters once — so "Xs total script" meant work done since the page loaded, not how busy the tab is now. It now takes two readings a few seconds apart and reports the rate: how much of that window the tab's main thread spent busy, and on what.

@@ -1,6 +1,6 @@
 // Shared configuration for the monitoring core.
 // manifest.json is the canonical version for Chrome; keep VERSION in sync with it.
-export const VERSION = "0.4.0";
+export const VERSION = "0.5.0";
 
 // A tab not accessed in this many minutes is flagged as "idle".
 export const IDLE_MINUTES = 60;
@@ -69,6 +69,22 @@ export const HEAP_SERIES_MIN_GAP_MS = 60000; // downsample cadence (~1 min)
 // Deep profiler: how long to watch a tab between its two Performance readings.
 // Long enough to average out a single burst; the debug banner shows meanwhile.
 export const DEEP_PROFILE_SAMPLE_MS = 3000;
+
+// --- Tab CPU sweep ("measure all tabs") ---
+// The deep profiler's two readings, taken on every loaded web tab at once, so a
+// sweep costs one sample window however many tabs are open. It's the only way to
+// see background tabs: Chrome reports no long tasks or long animation frames to a
+// hidden page, so the in-page probe is blind to their work (verified Chrome 156).
+export const CPU_SWEEP_KEY = "cpuSweep"; // storage.session: the latest sweep
+export const CPU_SWEEP_MAX_TABS = 40; // beyond this, the most recently used tabs win
+// Main-thread busy % at/above which a measured tab is flagged. Hidden tabs get a
+// much lower bar: Chrome throttles their timers to about 1% CPU after a few seconds,
+// so a background tab well above that is being kept awake by something.
+export const CPU_BUSY_WARN_PCT = 25;
+export const CPU_BG_WARN_PCT = 5;
+// A sweep is a snapshot; past this age it's shown as stale and stops counting
+// toward the health verdict.
+export const CPU_SWEEP_STALE_MIN = 10;
 
 // Script attribution (Long Animation Frames): a source is named as a tab's culprit
 // only with at least this much attributed script time (in the window, or page life).

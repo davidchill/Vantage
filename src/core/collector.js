@@ -3,6 +3,7 @@
 
 import { getPerf } from "./perf-store.js";
 import { getStrainHistory } from "./strain-history.js";
+import { CPU_SWEEP_KEY } from "./constants.js";
 
 /**
  * Take a point-in-time snapshot of tabs, groups, and system memory.
@@ -10,13 +11,14 @@ import { getStrainHistory } from "./strain-history.js";
  * two readings over a short interval to produce a percentage.
  */
 export async function collectSnapshot() {
-  const [tabs, groups, memory, extensions, perf, strainHistory] = await Promise.all([
+  const [tabs, groups, memory, extensions, perf, strainHistory, sweepWrap] = await Promise.all([
     chrome.tabs.query({}),
     chrome.tabGroups?.query ? chrome.tabGroups.query({}) : Promise.resolve([]),
     chrome.system.memory.getInfo(),
     collectExtensions(),
     getPerf(),
     getStrainHistory(),
+    chrome.storage.session.get(CPU_SWEEP_KEY), // latest "measure all tabs", if any
   ]);
 
   return {
@@ -27,6 +29,7 @@ export async function collectSnapshot() {
     perfLive: perf.live,
     perfHistory: perf.history,
     strainHistory,
+    cpuSweep: sweepWrap[CPU_SWEEP_KEY] || null,
     takenAt: Date.now(),
   };
 }

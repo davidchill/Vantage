@@ -7,6 +7,10 @@ import { collectSnapshot, sampleCpuPercent } from "../../core/collector.js";
 import { analyze } from "../../core/analyzer.js";
 import { READOUT_TIPS, GAUGE_TIPS, VERDICT_TIP } from "./explainers.js";
 import { describeSource } from "../../core/script-cost.js";
+import { fmtPct } from "../../core/profile.js";
+
+// Tab CPU rows under this main-thread busy % are idle noise and aren't listed.
+const CPU_ROW_MIN_PCT = 1;
 
 /** Escape untrusted text (tab titles/URLs are page-controlled). */
 function esc(str) {
@@ -39,7 +43,10 @@ export function readout(value, label, hot = false, tip = "") {
   return `<div class="readout"${tipAttr}><span class="rv${hot ? " hot" : ""}">${value}</span><span class="rl">${label}</span></div>`;
 }
 
-/** Expandable detail: optional URL line, a key/value grid, and a bullet list. */
+/**
+ * Expandable detail: optional URL line, a key/value grid, a one-line-per-item
+ * bullet list (titles, sources), and wrapping explanatory notes.
+ */
 function detailBlock(item) {
   if (!item) return "";
   let html = "";
@@ -54,6 +61,9 @@ function detailBlock(item) {
   }
   if (item.bullets && item.bullets.length) {
     html += `<ul class="d-list">${item.bullets.map((b) => `<li>${esc(b)}</li>`).join("")}</ul>`;
+  }
+  if (item.notes && item.notes.length) {
+    html += `<div class="d-notes">${item.notes.map((n) => `<p>${esc(n)}</p>`).join("")}</div>`;
   }
   return `<div class="detail">${html || '<span class="d-empty">// no further detail</span>'}</div>`;
 }
@@ -75,8 +85,10 @@ function lineRow(key, expanded, cls, titleHtml, metaHtml, actionsHtml, item, lea
  * A section with a hairline-boxed list of log lines (or an empty marker).
  * The header is a collapse toggle: clicking it hides the body. Collapsed state is
  * keyed by `id` in the `collapsed` Set so it survives the 5s live re-render.
+ * Header controls (`slot`) are hidden while the list is empty, unless the section
+ * needs them to produce rows in the first place (`slotWhenEmpty`).
  */
-function section(id, title, rows, emptyMsg, slot = "", collapsed) {
+function section(id, title, rows, emptyMsg, slot = "", collapsed, slotWhenEmpty = false) {
   const isCollapsed = !!(collapsed && collapsed.has(id));
   const count = rows.length ? `<span class="sec-count">${rows.length}</span>` : "";
   const head = `<div class="sec-head" data-sec="${esc(id)}" role="button" aria-expanded="${!isCollapsed}">
@@ -85,7 +97,7 @@ function section(id, title, rows, emptyMsg, slot = "", collapsed) {
       <span class="sec-title">${title}</span>
       <button class="sec-info" data-info="${esc(id)}" title="What is this?" aria-label="About this section">i</button>
       ${count}
-      ${slot && rows.length ? `<span class="sec-slot">${slot}</span>` : ""}
+      ${slot && (rows.length || slotWhenEmpty) ? `<span class="sec-slot">${slot}</span>` : ""}
     </div>`;
   const body = rows.length
     ? `<div class="lines">${rows.join("")}</div>`
@@ -231,6 +243,7 @@ function sourceBadge(e) {
 /**
  * Render a summary into the given container element.
  * @param {Set<string>} expanded — keys of rows that should be shown expanded.
+ * @param {{measuring?: boolean}} ui — transient panel state (a Tab CPU sweep in flight).
  */
 export function renderSummary(
   contentEl,
@@ -238,7 +251,8 @@ export function renderSummary(
   cpuPercent,
   expanded = new Set(),
   sortState = new Map(),
-  collapsed = new Set()
+  collapsed = new Set(),
+  ui = {}
 ) {
   const { totals, memory, idleTabs, duplicates, heavyDomains, heavyTabs, extensions } =
     summary;
@@ -302,6 +316,40 @@ export function renderSummary(
           <span class="gv">${heap.mb.toLocaleString()}M · ${heap.tabs} tab${heap.tabs === 1 ? "" : "s"}</span>
         </div>`;
   const gauges = `<div class="gauges">${memGauge}${cpuGauge}${heapGauge}</div>`;
+
+  // ── Tab CPU (measured on demand, busiest first) ─────────────────────────
+  const cpu = summary.cpu;
+  const cpuRows = (cpu ? cpu.rows : [])
+    .filter((m) => m.mainThreadPct >= CPU_ROW_MIN_PCT)
+    .slice(0, 8)
+    .map((m) => {
+      const bits = [fmtPct(m.mainThreadPct)];
+      if (m.audible) bits.unshift("🔊");
+      if (m.adFrames) bits.push(`${m.adFrames} ads`);
+      return lineRow(
+        `cu:${m.id}`,
+        expanded,
+        m.flagged && !cpu.stale ? "warn" : "",
+        `${m.background ? "🌙 " : ""}${esc(m.title)}`,
+        bits.join(" · "),
+        profileActions(m),
+        m
+      );
+    });
+  let cpuNote = "";
+  if (ui.measuring) cpuNote = "measuring…";
+  else if (cpu) {
+    const when = cpu.ageMin < 1 ? "just now" : `${cpu.ageMin}m ago`;
+    cpuNote = `${cpu.rows.length} tabs · ${when}${cpu.stale ? " · stale" : ""}`;
+    if (cpu.skipped.length) {
+      const why = cpu.skipped.map((s) => `${s.title}: ${s.reason}`).join("\n");
+      cpuNote += ` · <span title="${esc(why)}">${cpu.skipped.length} skipped</span>`;
+    }
+  }
+  const measureBtn = `<button class="act" data-act="measure-all" title="Measure every loaded tab's main-thread load over 3s — Chrome shows a debugging banner meanwhile">${ui.measuring ? "…" : "measure"}</button>`;
+  let cpuEmpty = "// press measure for every tab's real load — background tabs included";
+  if (cpu && cpu.rows.length) cpuEmpty = `// all ${cpu.rows.length} measured tabs idle (under ${CPU_ROW_MIN_PCT}% busy)`;
+  else if (cpu) cpuEmpty = "// no measured tab is still open — measure again";
 
   // ── Page performance (worst-first) ──────────────────────────────────────
   const perf = summary.performance;
@@ -449,6 +497,15 @@ export function renderSummary(
     verdict +
     cluster +
     gauges +
+    section(
+      "cpu",
+      "Tab CPU",
+      cpuRows,
+      cpuEmpty,
+      (cpuNote ? `<span class="sec-note">${cpuNote}</span>` : "") + measureBtn,
+      collapsed,
+      true
+    ) +
     section("perf", "Page Performance", perfRows, perfEmpty, `<span class="sec-note">live + predicted</span>`, collapsed) +
     section(
       "chronic",
@@ -514,14 +571,15 @@ export async function runAndRender(
   contentEl,
   expanded = new Set(),
   sortState = new Map(),
-  collapsed = new Set()
+  collapsed = new Set(),
+  ui = {}
 ) {
   const [snapshot, cpuPercent] = await Promise.all([
     collectSnapshot(),
     getCpuPercent(),
   ]);
   const summary = analyze(snapshot);
-  renderSummary(contentEl, summary, cpuPercent, expanded, sortState, collapsed);
+  renderSummary(contentEl, summary, cpuPercent, expanded, sortState, collapsed, ui);
   return { summary, cpuPercent };
 }
 

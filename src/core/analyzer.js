@@ -21,9 +21,13 @@ import {
   CHRONIC_MIN_EPISODES,
   CHRONIC_RECENT_DAYS,
   CULPRIT_MIN_MS,
+  CPU_BUSY_WARN_PCT,
+  CPU_BG_WARN_PCT,
+  CPU_SWEEP_STALE_MIN,
 } from "./constants.js";
 import { computeHealth } from "./health.js";
 import { analyzeScriptCost, topCulprit, describeSource, fmtMs } from "./script-cost.js";
+import { loadWord, fmtPct, busyMix, mostlyUnlabelled } from "./profile.js";
 
 /**
  * Collapse trivial URL differences so true duplicates group together. Only the
@@ -187,6 +191,94 @@ function tabStats(t, live, now, extNames) {
     s.push(["page metrics", "n/a (restricted/unloaded)"]);
   }
   return s;
+}
+
+/** Key/value detail rows for one measured tab from a Tab CPU sweep. */
+function cpuStats(m, ageMin) {
+  // Values kept short: the detail grid gives each one half the panel's width.
+  const s = [["main thread", `${fmtPct(m.mainThreadPct)} · ${loadWord(m.mainThreadPct)}`]];
+  const mix = busyMix(m);
+  if (mix) s.push(["busy with", mix]);
+  if (m.jsHeapMB != null)
+    s.push(["js heap", `${m.jsHeapMB} MB${m.jsHeapTotalMB ? ` / ${m.jsHeapTotalMB} MB` : ""}`]);
+  if (m.nodes != null) s.push(["dom nodes", m.nodes.toLocaleString()]);
+  if (m.listeners != null) s.push(["listeners", m.listeners.toLocaleString()]);
+  if (m.frames != null) s.push(["frames", `${m.frames}${m.adFrames ? ` (${m.adFrames} ads)` : ""}`]);
+  if (m.layouts) s.push(["layouts", `${m.layouts} in ${m.sampleSeconds}s`]);
+  s.push(["tab", `${m.background ? "background" : "on screen"}${m.audible ? ", audio" : ""}`]);
+  s.push(["measured", `${m.sampleSeconds}s · ${ageMin < 1 ? "just now" : `${Math.floor(ageMin)}m ago`}`]);
+  return s;
+}
+
+/** Plain-language reading of what a measured tab's numbers suggest (detail notes). */
+function cpuNotes(m, flagged) {
+  const b = [];
+  if (flagged && m.background && !m.audible) {
+    b.push(
+      "Busy in the background. Chrome holds hidden tabs' timers to about 1% CPU, so something else is keeping it awake — media, live network updates, or workers."
+    );
+  } else if (m.background && m.audible && m.mainThreadPct >= CPU_BG_WARN_PCT) {
+    b.push("Playing audio, so some background work is expected.");
+  }
+  if (mostlyUnlabelled(m)) {
+    b.push(
+      "Most of its busy time isn't labelled script — usually JavaScript running after 'await' or in promise callbacks, which Chrome's script counter doesn't count, plus parsing and garbage collection."
+    );
+  }
+  if ((m.layoutPct || 0) + (m.stylePct || 0) >= 5) {
+    b.push(
+      "Much of its busy time is layout and style — the page keeps re-measuring itself, often a script reading sizes in a loop."
+    );
+  }
+  if (m.adFrames) {
+    b.push(
+      `${m.adFrames} ad frame${m.adFrames > 1 ? "s" : ""}: work inside them runs in separate processes and isn't counted in this figure.`
+    );
+  }
+  return b;
+}
+
+/**
+ * The latest Tab CPU sweep, joined to the tabs still open. A reading describes the
+ * page that was measured, so tabs closed, put to sleep, or moved to another site
+ * since are dropped; titles come from the live tab. Null when there's no sweep.
+ */
+function measuredCpu(sweep, tabs, now, originOf) {
+  if (!sweep) return null;
+  const ageMin = (now - sweep.takenAt) / 60000;
+  const open = new Map(tabs.map((t) => [t.id, t]));
+  const rows = [];
+  for (const m of sweep.tabs) {
+    const t = open.get(m.tabId);
+    if (!t || t.discarded || m.mainThreadPct == null) continue;
+    if (originOf(t.url || "") !== originOf(m.url || "")) continue;
+    // Any tab this busy is heavy; a hidden one needs far less to stand out, since
+    // Chrome throttles hidden tabs (audio is the expected exception).
+    const flagged =
+      m.mainThreadPct >= CPU_BUSY_WARN_PCT ||
+      (m.background && !m.audible && m.mainThreadPct >= CPU_BG_WARN_PCT);
+    const { tabId, title, url, ...metrics } = m;
+    rows.push({
+      ...metrics,
+      id: t.id,
+      title: t.title || t.url || title,
+      url: t.url,
+      discarded: false,
+      flagged,
+      stats: cpuStats(m, ageMin),
+      notes: cpuNotes(m, flagged),
+    });
+  }
+  rows.sort((a, b) => b.mainThreadPct - a.mainThreadPct);
+  return {
+    takenAt: sweep.takenAt,
+    ageMin: Math.floor(ageMin),
+    stale: ageMin >= CPU_SWEEP_STALE_MIN,
+    loaded: sweep.loaded,
+    measured: sweep.tabs.length,
+    skipped: sweep.skipped,
+    rows,
+  };
 }
 
 /**
@@ -602,10 +694,20 @@ export function analyze(snapshot) {
       : 0,
   };
 
+  // Measured main-thread load from the latest Tab CPU sweep. It's the only way
+  // background CPU shows up in current Chrome (hidden pages get no long-task
+  // entries), so a fresh sweep's busy background tabs count toward the same health
+  // factor as the probe's background-drain rows — once per tab if both saw it.
+  const cpu = measuredCpu(snapshot.cpuSweep, tabs, now, (raw) => metaOf(raw).origin);
+  const drainIds = new Set(backgroundDrain.map((b) => b.id));
+  if (cpu && !cpu.stale) {
+    for (const r of cpu.rows) if (r.flagged && r.background && !r.audible) drainIds.add(r.id);
+  }
+
   const health = computeHealth({
     memoryPercent: mem.usedPercent,
     tabCount: tabs.length,
-    backgroundDrain: backgroundDrain.length,
+    backgroundDrain: drainIds.size,
     leaks: leaks.length,
     liveJank: liveWarnings.length,
     heavyOrigins: predictions.filter((p) => p.heavy).length,
@@ -636,5 +738,6 @@ export function analyze(snapshot) {
     health,
     memory: mem,
     chromeHeap,
+    cpu,
   };
 }

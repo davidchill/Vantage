@@ -1,6 +1,7 @@
 // service-worker.js — the always-on background monitor.
-// Periodically (and on tab changes) it rebuilds the summary, caches it for the
-// popup to read instantly, and reflects the current state on the toolbar badge.
+// Periodically (and on tab changes) it rebuilds the summary and reflects the current
+// state on the toolbar badge. It also collects the in-page probes' reports and runs
+// the on-demand DevTools measurements (deep profile, Tab CPU sweep).
 
 import { collectSnapshot } from "../core/collector.js";
 import { analyze } from "../core/analyzer.js";
@@ -15,6 +16,8 @@ import {
   PERF_FLUSH_MAX_BATCH,
   LEGACY_STRAIN_HISTORY_KEY,
   DEEP_PROFILE_SAMPLE_MS,
+  CPU_SWEEP_KEY,
+  CPU_SWEEP_MAX_TABS,
 } from "../core/constants.js";
 
 // Every storage update the worker makes is a read-modify-write of a whole object
@@ -192,29 +195,131 @@ function queuePerfReport(tabId, docId, data) {
   else if (perfFlushTimer == null) perfFlushTimer = setTimeout(flushPerfReports, PERF_FLUSH_MS);
 }
 
+// --- Measuring tabs over the DevTools protocol (chrome.debugger) -------------
+// A reading is two Performance.getMetrics calls DEEP_PROFILE_SAMPLE_MS apart: the
+// counters are cumulative since page load, so their difference says how busy a tab
+// is right now (see profile.js). Attaching shows Chrome's "started debugging"
+// banner for the sample window — by design, and why this only runs on a click.
+
+// A hung page's main thread never answers a protocol command, so every call gets a
+// deadline — otherwise one frozen tab would stall the whole measurement.
+const CDP_REPLY_MS = 5000;
+
+/** Reject with `what` if `promise` hasn't settled within `ms`. */
+function withTimeout(promise, ms, what) {
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(what)), ms);
+  });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
+
+const cdp = (target, method) =>
+  withTimeout(chrome.debugger.sendCommand(target, method), CDP_REPLY_MS, "page unresponsive");
+
+async function readMetrics(target) {
+  const { metrics } = await cdp(target, "Performance.getMetrics");
+  return Object.fromEntries(metrics.map((x) => [x.name, x.value]));
+}
+
+// Chrome allows one debugger attach per tab, so a deep profile and a sweep must not
+// overlap — the second would fail to attach to the tabs the first holds.
+let sampling = false;
+
 /**
- * Attach the DevTools protocol to one tab and read its Performance metrics twice,
- * DEEP_PROFILE_SAMPLE_MS apart. The counters are cumulative since page load, so the
- * difference is what says how busy the tab is right now (see profile.js). This
- * shows Chrome's "debugging this tab" banner for the sample window — by design.
+ * Take a reading of every tab in `tabIds` at once: each is attached, read, given one
+ * sample window, read again — all side by side, so the whole thing takes one window
+ * however many tabs there are, and a slow tab never stretches the others' windows.
+ * Everything attached is detached at the end.
+ * @returns {Promise<Map<number, {before, after} | {error: string}>>}
  */
-async function deepProfile(tabId) {
-  const target = { tabId };
-  const tab = await chrome.tabs.get(tabId);
-  await chrome.debugger.attach(target, "1.3");
+async function sampleTabs(tabIds) {
+  if (sampling) throw new Error("another measurement is still running");
+  sampling = true;
+  const attached = [];
+  const results = new Map();
   try {
-    await chrome.debugger.sendCommand(target, "Performance.enable");
-    const read = async () => {
-      const { metrics } = await chrome.debugger.sendCommand(target, "Performance.getMetrics");
-      return Object.fromEntries(metrics.map((x) => [x.name, x.value]));
-    };
-    const before = await read();
-    await new Promise((resolve) => setTimeout(resolve, DEEP_PROFILE_SAMPLE_MS));
-    const after = await read();
-    return { title: tab.title || tab.url || "", ...summarizeProfile(before, after) };
+    await Promise.all(
+      tabIds.map(async (tabId) => {
+        const target = { tabId };
+        const attaching = chrome.debugger.attach(target, "1.3");
+        try {
+          await withTimeout(attaching, CDP_REPLY_MS, "page unresponsive");
+          attached.push(target);
+          await cdp(target, "Performance.enable");
+          const before = await readMetrics(target);
+          await new Promise((resolve) => setTimeout(resolve, DEEP_PROFILE_SAMPLE_MS));
+          results.set(tabId, { before, after: await readMetrics(target) });
+        } catch (err) {
+          // An attach that lands after its deadline still has to be undone.
+          if (!attached.includes(target)) {
+            attaching.then(() => chrome.debugger.detach(target)).catch(() => {});
+          }
+          results.set(tabId, { error: String(err?.message || err) });
+        }
+      })
+    );
+    return results;
   } finally {
-    await chrome.debugger.detach(target).catch(() => {});
+    await Promise.all(
+      attached.map((t) =>
+        withTimeout(chrome.debugger.detach(t), CDP_REPLY_MS, "detach").catch(() => {})
+      )
+    );
+    sampling = false;
   }
+}
+
+/** Deep profile: one tab's reading, plus its title for the panel. */
+async function deepProfile(tabId) {
+  const tab = await chrome.tabs.get(tabId);
+  const r = (await sampleTabs([tabId])).get(tabId);
+  if (r.error) throw new Error(r.error);
+  return { title: tab.title || tab.url || "", ...summarizeProfile(r.before, r.after) };
+}
+
+/**
+ * Tab CPU sweep: a reading of every loaded web tab at once, saved for the panel, the
+ * badge's health verdict and AI analysis. Asleep tabs aren't running, and Chrome's
+ * own pages can't be debugged by extensions, so both are left out.
+ */
+async function measureAllTabs() {
+  const [tabs, windows] = await Promise.all([
+    chrome.tabs.query({ url: ["http://*/*", "https://*/*"] }),
+    chrome.windows.getAll(),
+  ]);
+  const minimized = new Set(windows.filter((w) => w.state === "minimized").map((w) => w.id));
+  const loaded = tabs.filter((t) => !t.discarded);
+  // Past the cap, keep the tabs most likely to matter: what's on screen or playing,
+  // then the most recently used.
+  const rank = (t) => (t.active ? 2 : 0) + (t.audible ? 1 : 0);
+  const chosen = [...loaded]
+    .sort((a, b) => rank(b) - rank(a) || (b.lastAccessed || 0) - (a.lastAccessed || 0))
+    .slice(0, CPU_SWEEP_MAX_TABS);
+
+  const results = await sampleTabs(chosen.map((t) => t.id));
+  const measured = [];
+  const skipped = [];
+  for (const t of chosen) {
+    const r = results.get(t.id);
+    const base = { tabId: t.id, title: t.title || t.url || "", url: t.url };
+    if (r.error) {
+      skipped.push({ ...base, reason: r.error });
+      continue;
+    }
+    measured.push({
+      ...base,
+      // Hidden from the page's point of view — not its window's showing tab, or the
+      // window is minimized — which is when Chrome throttles it.
+      background: !t.active || minimized.has(t.windowId),
+      audible: !!t.audible,
+      ...summarizeProfile(r.before, r.after),
+    });
+  }
+  const sweep = { takenAt: Date.now(), loaded: loaded.length, tabs: measured, skipped };
+  await chrome.storage.session.set({ [CPU_SWEEP_KEY]: sweep });
+  scheduleScan(); // busy background tabs count toward the badge's health verdict
+  return sweep;
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -234,6 +339,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg?.type === "deep-profile") {
     deepProfile(msg.tabId).then(
       (metrics) => sendResponse({ ok: true, metrics }),
+      (err) => sendResponse({ ok: false, error: String(err?.message || err) })
+    );
+    return true;
+  }
+  if (msg?.type === "measure-all") {
+    measureAllTabs().then(
+      (sweep) => sendResponse({ ok: true, sweep }),
       (err) => sendResponse({ ok: false, error: String(err?.message || err) })
     );
     return true;

@@ -2,7 +2,7 @@
 
 A live **performance console** for Chrome. Vantage runs as an always-on background monitor over your tabs, extensions, cookies/trackers, and the browser's resource usage, then diagnoses what's slowing Chrome down — all in a dark, monospace, instrument-grade side panel.
 
-> **Status:** v0.4.0 — monitoring & diagnosis, **script attribution** (which domains are actually spending a page's main-thread time), a **deep profiler that measures a tab's real main-thread load**, a per-site privacy inspector, opt-in rule-based auto-management, long-term strain tracking, an optional AI analysis, and in-context help throughout. Still pre-1.0 and evolving.
+> **Status:** v0.5.0 — monitoring & diagnosis, **Tab CPU** (every tab's real main-thread load in one 3-second sweep, background tabs included), **script attribution** (which domains are actually spending a page's main-thread time), a **deep profiler** for one tab, a per-site privacy inspector, opt-in rule-based auto-management, long-term strain tracking, an optional AI analysis, and in-context help throughout. Still pre-1.0 and evolving.
 
 ---
 
@@ -27,7 +27,7 @@ Chrome's own Task Manager tells you a process is heavy *after* it already is, in
 
 Two constraints shape everything:
 
-1. **Stable Chrome hides the good numbers.** Extensions can't read per-tab or per-extension CPU/RAM on the stable channel (the `chrome.processes` API is Dev/Canary-only). So Vantage leans on *measured behavioral signals* (main-thread blocking, heap trends) and *structural proxies* (permission breadth, media, idle time) instead of pretending to numbers it can't get.
+1. **Stable Chrome hides the good numbers.** Extensions can't read per-tab or per-extension CPU/RAM on the stable channel (the `chrome.processes` API is Dev/Canary-only). So Vantage leans on *measured behavioral signals* (main-thread blocking, heap trends) and *structural proxies* (permission breadth, media, idle time) instead of pretending to numbers it can't get — and when you want true per-tab figures, it measures them on demand over the DevTools protocol.
 2. **Cheap enough to always run.** The in-page probe reads the page's own Performance APIs — the same data behind DevTools' Performance tab — without attaching a debugger, so it can run on every tab continuously with no "debugging this tab" banner.
 
 ---
@@ -35,7 +35,7 @@ Two constraints shape everything:
 ## Features
 
 ### Chrome Health Score
-A single **Good / Strained / Heavy** verdict at the top of the panel, synthesized from every signal (memory pressure, tab count, background CPU drain, memory leaks, live jank, heavy origins, open chronic-strain sites). The top contributing factors are listed so the verdict is explainable, never a black box. The toolbar badge carries the same verdict — blue when Good, amber when Strained, red when Heavy — and hovering the icon shows the verdict and its top factors without opening the panel.
+A single **Good / Strained / Heavy** verdict at the top of the panel, synthesized from every signal (memory pressure, tab count, busy background tabs found by a Tab CPU measure, memory leaks, live jank, heavy origins, open chronic-strain sites). The top contributing factors are listed so the verdict is explainable, never a black box. The toolbar badge carries the same verdict — blue when Good, amber when Strained, red when Heavy — and hovering the icon shows the verdict and its top factors without opening the panel.
 
 ### Tab telemetry
 Totals (tabs, windows, sleeping, audible, pinned, muted, loading), **duplicate-tab sets** (exact address match, including anything after `#` — many apps, like Gmail, route by it), **idle tabs** (untouched 60 min+), and **crowded domains** (one site hogging many tabs).
@@ -46,15 +46,20 @@ Totals (tabs, windows, sleeping, audible, pinned, muted, loading), **duplicate-t
 - **`SYS MEM` / `SYS CPU`** — whole-machine memory and CPU usage (`chrome.system.memory` / `chrome.system.cpu`), across every process, not Chrome's slice. The labels and tooltips say so explicitly so the numbers aren't mistaken for Chrome's footprint. CPU is sampled over a short interval (two readings of the cumulative per-core tick counters) since a single reading is meaningless.
 - **`JS HEAP`** — the one **Chrome-attributable** memory figure obtainable without attaching the debugger: the per-renderer JS heap (`usedJSHeapSize`) the in-page probe already reports, summed across measured tabs and shown as a share of system RAM. Deliberately partial — JS-heap only, excludes the browser/GPU processes and non-JS memory, and same-origin tabs sharing a renderer can be double-counted — and labeled as such. Hidden until the probe has reported.
 
+### Tab CPU (measure all tabs)
+Press **measure** and Vantage reads **every loaded tab's real main-thread load** — how much of a 3-second window each tab's main thread spent busy, and on what — using the same DevTools counters as the deep profiler, on all tabs side by side, so a sweep takes 3 seconds however many tabs are open. It's the one view that sees **background tabs**: in current Chrome a hidden page is told nothing about its own work (no Long Tasks, no Long Animation Frames), so the always-on probe is blind to it.
+
+Rows list tabs at 1%+ busiest first, with 🌙 for background tabs, 🔊 for audio, and Chrome-tagged ad frames. A tab is flagged at 25%+ — or at just 5%+ in the background, because Chrome throttles hidden tabs' timers to about 1% CPU after a few seconds, so a background tab above that is being kept awake by something (media, live network updates, workers). Expanding a row shows what the time went to (script / layout / style / other), heap, DOM size, frames, and a plain-language read. A fresh sweep's busy background tabs count toward System Status; after 10 minutes a sweep is marked stale and stops counting. Hung tabs are reported as unresponsive after 5 seconds rather than stalling the sweep, and up to 40 tabs are measured (on-screen and audible first, then most recent). Chrome shows its "started debugging this browser" banner during the sample, which is why it only runs when you press the button.
+
 ### Page-performance engine
 An in-page probe reads each page's **own** Performance APIs — no DevTools banner — and reports compact metrics every 5s:
 
 - **Live jank** — main-thread blocking happening *right now* (Long Tasks over the 50 ms budget).
-- **Background CPU drain** — tabs burning CPU while **hidden**. The worst kind of waste: you can't even see it. Held to a lower bar than foreground blocking. Throttling-aware: Chrome slows long-hidden tabs' timers to about one wake-up a minute, so each report carries its window length and blocking is normalized to a per-5s rate, and hidden tabs get a longer staleness allowance.
+- **Background CPU drain** — a hidden tab reporting Long Tasks. Throttling-aware (each report carries its window length, normalized to a per-5s rate). **Current Chrome no longer reports work in hidden tabs to the page** (verified on Chrome 156), so these rarely appear there — Tab CPU is the reliable check for background tabs. Kept for browsers that still report it.
 - **Memory-leak trends** — a per-tab JS-heap series (sampled about once a minute, scoped to the current page) flags a heap whose **floor** — its low point — climbs 75 MB+ over 10 min+. Comparing low points rather than single readings means garbage-collection sawtooth can't fake or hide a leak; navigating, reloading, or a prerendered page never reads as growth.
 - **Web Vitals** — LCP (load), INP (interaction latency), CLS (layout shift, measured as Core Web Vitals defines it: the worst session window), plus page load time.
 - **Predictions** — a persisted per-origin rolling average ("this site *tends* to be heavy / slow / laggy"), so a known-bad site is flagged the moment you open it, before it misbehaves again. Rolling averages (no all-time maximums) let a site's record recover; asleep tabs aren't predicted.
-- **Script attribution** (Chrome 123+) — via the Long Animation Frames API, the probe records which script sources run in slow frames. A janky or background-draining row names the source behind its latest window (`⚠ 900ms · doubleclick.net`, the top three on expand), and every tab's detail shows its page-life **top script** — so you see *who* is costing the CPU, not just that something is.
+- **Script attribution** (Chrome 123+) — via the Long Animation Frames API, the probe records which script sources run in slow frames while the tab is on screen. A janky or background-draining row names the source behind its latest window (`⚠ 900ms · doubleclick.net`, the top three on expand), and every tab's detail shows its page-life **top script** — so you see *who* is costing the CPU, not just that something is.
 
 ### Chronic Strain tracking
 A persistent **per-origin "repeat offender" ledger** — the time dimension the per-origin averages lack. It answers *how often, and how persistently,* a site crosses into strain, not just how heavy it is on average. Once a minute, on the background alarm (tab activity never adds counts), the origins with **measured** strain — live jank, background drain, memory growth — fold into a running tally (episode count, current/worst consecutive streak, per-kind breakdown) that survives restarts. History-based predictions are deliberately kept out, so the ledger can't feed on its own past verdicts. The **Chronic Strain** section surfaces sites flagged repeatedly and still misbehaving recently, flagging which are loaded right now (open and not asleep).
@@ -70,15 +75,15 @@ Ads, trackers, third-party domains, cookies, and script cost for the page you're
 Every installed extension ranked by **inferred impact** (permission breadth — broad host access and heavy always-on APIs like `webRequest`/`declarativeNetRequest` rank highest), with icon, version, install source (flags **sideloaded**, **dev**, **policy-forced**), and the full plain-English permission warnings.
 
 ### Deep profiler
-On-demand **real load** for a single tab — the ⌖ button on Likely Heavy Tabs and Page Performance rows. Stable Chrome gives extensions no per-tab CPU figure, so the profiler attaches the DevTools protocol (`chrome.debugger` → `Performance.getMetrics`) and reads the tab's counters **twice, 3 seconds apart**: those counters are cumulative since page load, and the difference says how busy the tab is *now*. The result reads like "**62%** main-thread busy (heavy) over 3s — script 48% · layout 9.1% · other 4.7%", followed by JS heap (used/total), DOM nodes, listeners, frames — including how many Chrome itself has tagged as **ads** — and layouts in the window.
+On-demand **real load** for a single tab — the ⌖ button on Tab CPU, Likely Heavy Tabs, and Page Performance rows. Stable Chrome gives extensions no per-tab CPU figure, so the profiler attaches the DevTools protocol (`chrome.debugger` → `Performance.getMetrics`) and reads the tab's counters **twice, 3 seconds apart**: those counters are cumulative since page load, and the difference says how busy the tab is *now*. The result reads like "**62%** main-thread busy (heavy) over 3s — script 48% · layout 9.1% · other 4.7%", followed by JS heap (used/total), DOM nodes, listeners, frames — including how many Chrome itself has tagged as **ads** — and layouts in the window.
 
-The counters were picked by testing against real Chrome rather than by name: a page built to keep its main thread 50% busy measured 50.1% end-to-end. The figure is the tab's renderer main thread, which same-site tabs sharing a process can add to. Chrome shows its "debugging this tab" banner during the 3-second sample, by design: it's the one place you get ground-truth per-tab figures.
+The counters were picked by testing against real Chrome rather than by name: a page built to keep its main thread 50% busy measured 50.1% end-to-end. The figure is the tab's renderer main thread, which same-site tabs sharing a process can add to. One quirk, also found by testing: Chrome's *script* counter doesn't count JavaScript that runs after an `await` or in a promise callback — it lands in **other** — so on modern, async-heavy sites "other" is often mostly script, and the result says so when it dominates. Chrome shows its "debugging this tab" banner during the 3-second sample, by design: it's where you get ground-truth per-tab figures.
 
 ### Auto-Management (opt-in, ships OFF)
-Rule-based **auto-sleep / auto-close** of tabs that stay strained too long. The detection is already done by the analyzer; this adds **time** — a tab is acted on only after staying continuously strained for a configurable **sustain window** (default 5 min), so a momentary spike never costs you a tab. Triggers (**background CPU drain**, **memory leak**) are individually toggleable and each maps to `sleep` (reversible) or `close`. Every action re-checks live tab state at the moment it fires and refuses to touch tabs you're using (active / pinned / audible). An **audit log** records every action and why.
+Rule-based **auto-sleep / auto-close** of tabs that stay strained too long. The detection is already done by the analyzer; this adds **time** — a tab is acted on only after staying continuously strained for a configurable **sustain window** (default 5 min), so a momentary spike never costs you a tab. Triggers (**background CPU drain**, **memory leak**) are individually toggleable and each maps to `sleep` (reversible) or `close`. (The background trigger relies on the probe's background-drain signal, which current Chrome no longer provides — see Limitations.) Every action re-checks live tab state at the moment it fires and refuses to touch tabs you're using (active / pinned / audible). An **audit log** records every action and why.
 
 ### AI Analysis (optional, bring-your-own key)
-On demand, Vantage ships the analyzed summary to the Anthropic API and renders Claude's plain-English verdict plus a prioritized, severity-ranked list of suggestions that name the actual tabs, sites, and extensions to act on — including the script source behind a janky or heavy tab when attribution has one. Off until you add an API key; **on-demand only**, never on the live loop.
+On demand, Vantage ships the analyzed summary to the Anthropic API and renders Claude's plain-English verdict plus a prioritized, severity-ranked list of suggestions that name the actual tabs, sites, and extensions to act on — including the script source behind a janky or heavy tab when attribution has one, and, after a recent Tab CPU measure, the tabs measured busiest (treated as ground truth over the estimates). Off until you add an API key; **on-demand only**, never on the live loop.
 
 ### Cleanup actions
 Per-tab **sleep** (`tabs.discard`) and **close**, plus bulk **sleep all idle** and **purge duplicates** sweeps. Destructive actions confirm first. Purge keeps the copy you're most invested in (pinned › active › audible › most recent) and never closes a pinned or audible copy.
@@ -94,7 +99,7 @@ A **dark, monospace, "observability console"** side panel: command-bar header wi
 
 - **Manifest V3** Chrome extension — background **service worker** (ES module), a **content-script** probe, and a **side-panel** UI.
 - **Vanilla JavaScript (ES modules), no build step, no dependencies.** Source files load directly as `type: "module"`; there is nothing to compile or bundle. `package.json` exists only for metadata.
-- **Chrome platform APIs:** `tabs`, `tabGroups`, `system.memory`, `system.cpu`, `storage` (`session` + `local`), `alarms`, `sidePanel`, `management`, `debugger`, `cookies`, `scripting`.
+- **Chrome platform APIs:** `tabs`, `tabGroups`, `windows`, `system.memory`, `system.cpu`, `storage` (`session` + `local`), `alarms`, `sidePanel`, `management`, `debugger` (DevTools protocol `Performance` domain), `cookies`, `scripting`.
 - **Web Performance APIs** (in the page): `PerformanceObserver` (longtask, long-animation-frame, largest-contentful-paint, layout-shift, event), `performance.memory`, resource & navigation timing.
 - **Anthropic API** (optional) — called directly from the extension via `fetch` with structured outputs; no SDK, no backend.
 - Storage-only persistence (no server); system monospace font stack (Cascadia Code / JetBrains Mono / SF Mono), no bundled assets.
@@ -109,7 +114,8 @@ The logic is split so every surface renders from one source of truth — the obj
 manifest.json                 MV3 config & permissions
 src/
   core/                       the "monitoring brain" — surface-agnostic, no DOM
-    collector.js              reads tabs / groups / memory / extensions / perf into one snapshot
+    collector.js              reads tabs / groups / memory / extensions / perf / the latest
+                              Tab CPU sweep into one snapshot
     analyzer.js               snapshot → structured, UI-ready summary (the brain)
     health.js                 synthesizes the Good / Strained / Heavy verdict
     constants.js              every threshold & storage key (single source of tuning)
@@ -117,7 +123,8 @@ src/
     strain-history.js         persistent per-origin chronic-strain ledger (over time)
     trackers.js               hostname → ad/tracker classification (curated DB, eTLD+1)
     script-cost.js            LoAF script sources → per-site main-thread cost + culprits
-    profile.js                two DevTools readings → a tab's main-thread busy % + breakdown
+    profile.js                two DevTools readings → a tab's main-thread busy % + breakdown,
+                              and the formatters that word a reading the same everywhere
     cookies.js                first-party + tracker cookie inspection / clearing
     settings.js               auto-management + AI config (storage.local)
     automation.js             rule-based sustained-strain sleep/close + audit log
@@ -127,7 +134,8 @@ src/
     service-worker.js         alarm scans (+ badge-only event scans), health badge,
                               perf intake, strain recording, automation, probe
                               injection on install/update, one queue for all
-                              storage writes, deep profiler
+                              storage writes, and the DevTools measurements
+                              (deep profile + Tab CPU sweep, one at a time)
   content/
     perf-probe.js             in-page Performance-API probe (Long Tasks, Web Vitals, hosts)
   ui/
@@ -139,7 +147,7 @@ src/
 
 **Data flow:** the content-script probe reports per-tab metrics → the service worker folds them into live + per-origin + strain stores → on each scan `collectSnapshot()` gathers Chrome state + the perf stores → `analyze()` turns it into a summary → the panel renders it and re-renders live every 5s. Automation and AI both consume that same summary.
 
-**Two storage tiers, on purpose:** `storage.session` holds within-a-browser-run state (live per-tab metrics, the automation strain timer) that *should* reset each run; `storage.local` holds things that should persist across restarts (per-origin history, the chronic-strain ledger, settings, the audit log).
+**Two storage tiers, on purpose:** `storage.session` holds within-a-browser-run state (live per-tab metrics, the latest Tab CPU sweep, the automation strain timer) that *should* reset each run; `storage.local` holds things that should persist across restarts (per-origin history, the chronic-strain ledger, settings, the audit log).
 
 ---
 
@@ -148,7 +156,8 @@ src/
 The interesting choices and *why* they went the way they did:
 
 - **Behavioral proxies over fake precision.** Stable Chrome won't give extensions per-tab CPU/RAM, so rather than display a number we can't actually measure, Vantage ranks "likely heavy" from signals it *can* read (measured main-thread blocking first, then measured JS heap and DOM size, then media/idle/crowding) and labels extensions by permission breadth. The deep profiler is the explicit escape hatch when you want true figures and accept the debug banner — and it measures a *rate* over a few seconds, because a single reading of cumulative counters can't tell you whether a tab is busy now.
-- **A passive probe, not a debugger.** Reading the page's own Performance APIs from a content script is cheap enough to run on every tab forever and shows no banner. Attaching `chrome.debugger` to every tab would be heavyweight and alarming — so that's reserved for explicit, one-tab deep profiling.
+- **A passive probe, not a debugger — plus a debugger when you ask.** Reading the page's own Performance APIs from a content script is cheap enough to run on every tab forever and shows no banner. Keeping `chrome.debugger` attached to every tab would be heavyweight and alarming — so it's reserved for explicit measurements: one tab (⌖) or every tab for 3 seconds (Tab CPU). That on-demand path matters more than it first seemed, because the probe goes blind the moment a tab is hidden.
+- **Check Chrome's behavior empirically before building on it.** Several design premises were tested in real Chrome rather than taken from docs or naming: which DevTools counters track real load (`TaskDuration` does; `ThreadTime` and `ProcessTime` don't), that hidden pages get no Long Task or Long Animation Frame entries at all, that Chrome throttles hidden tabs' timers to about 1% CPU, and that async JavaScript isn't counted as "script". Each finding changed what Vantage shows or how it words it.
 - **Per-origin *history* vs per-origin *strain* are different questions.** The rolling EMA answers "how heavy is this site on average" (→ predictions). The strain ledger answers "how often / how persistently does it cross the line" (→ chronic offenders). Keeping them separate avoids smearing a site that's occasionally terrible into a site that's mildly heavy all the time.
 - **The verdict counts only what was measured, at a fixed cadence.** A diagnostics tool that overstates strain trains you to ignore it. So the chronic ledger records only measured strain, once a minute on the alarm — never predictions, never tab-activity bursts; asleep tabs don't count as strain; Web Vitals follow the standard definitions; and readings are corrected for Chrome's own behavior (hidden-tab timer throttling, prerendered pages, garbage-collection sawtooth) before they're judged.
 - **Automation gates on *time*, and ships off.** Detection is instantaneous, but acting on a momentary spike would be hostile, so automation waits for a continuous sustain window and re-validates live state before touching anything — and never auto-runs until you opt in. Sleep is preferred over close; the audit log means nothing disappears silently.
@@ -178,7 +187,7 @@ The interesting choices and *why* they went the way they did:
 | `alarms` | Drive the once-a-minute background scan. |
 | `sidePanel` | The panel UI, toggled from the toolbar icon. |
 | `management` | The extensions inventory (and the permission-warning text). |
-| `debugger` | The opt-in deep profiler only (a tab's real main-thread load, sampled over 3s). |
+| `debugger` | On-demand measurements only — the ⌖ deep profiler and Tab CPU › measure (real main-thread load, sampled over 3s, then detached). |
 | `cookies` | The Current-Tab cookie inspector and *clear cookies*. |
 | `scripting` | Inject the probe into tabs already open when Vantage is installed or updated — otherwise they'd go unmeasured until reloaded. No extra install warning. |
 | `host_permissions: http/https` | Inject the performance probe into pages and read resource hostnames. |
@@ -198,11 +207,12 @@ Requires **Chrome 121+**. Page-performance data starts within seconds — the pr
 
 ## Limitations & notes
 
-- Stable Chrome does not expose per-tab or per-extension CPU/RAM to extensions; Vantage uses system-level resources plus behavioral heuristics and permission breadth as proxies. The deep profiler is the one source of true per-tab figures — and it measures the tab's renderer *main thread* (not workers or the GPU), which same-site tabs sharing a process can add to.
+- Stable Chrome does not expose per-tab or per-extension CPU/RAM to extensions; Vantage uses system-level resources plus behavioral heuristics and permission breadth as proxies. The deep profiler and Tab CPU are the sources of true per-tab figures — and they measure the tab's renderer *main thread* (not workers, the GPU, or cross-origin iframes such as most ads, which run in other processes), which same-site tabs sharing a process can add to. Chrome's script counter misses async JavaScript, so the "other" share often includes script.
+- **Hidden tabs are invisible to in-page monitoring in current Chrome** (verified on Chrome 156): a hidden page receives no Long Task or Long Animation Frame entries, so the probe's background-drain rows rarely appear and auto-management's background CPU trigger doesn't fire there. Tab CPU › measure is the way to see background load.
 - `performance.memory` reports the JS heap of a page's whole renderer process, so tabs from the same site sharing a process show the same figure; treat per-tab heap as indicative rather than exact. (On desktop Chrome it is precise and updates live.)
 - Long-hidden tabs report only about once a minute (Chrome's timer throttling). Vantage normalizes for it, but background readings are coarser than foreground ones.
 - Long Tasks only see work in tasks over 50 ms on the page's main thread — not frequent short tasks, workers, or cross-origin iframes.
-- Script attribution (Long Animation Frames) has its own limits: it needs Chrome 123+; Chrome credits the script that *started* the work, not necessarily the file that ran longest; scripts under 5 ms aren't itemized; and **extension content scripts and cross-origin iframes are never attributed** — so it measures third-party page scripts, not extensions (an extension appears only if it injects a script into the page itself). Whether hidden tabs report LoAF at all is still being verified.
+- Script attribution (Long Animation Frames) has its own limits: it needs Chrome 123+; Chrome credits the script that *started* the work, not necessarily the file that ran longest; scripts under 5 ms aren't itemized; and **extension content scripts and cross-origin iframes are never attributed** — so it measures third-party page scripts, not extensions (an extension appears only if it injects a script into the page itself). It covers on-screen time only, since hidden tabs report nothing.
 - Content scripts can't run on `chrome://` pages, the Web Store, or the PDF viewer; those tabs show metadata only.
 - The tracker database is a curated, representative list — enough to answer "what's tracking me here," not an exhaustive blocklist.
 - AI Analysis is metered by Anthropic and billed to your key; one analysis is a fraction of a cent to a few cents depending on the model.
@@ -218,6 +228,6 @@ Requires **Chrome 121+**. Page-performance data starts within seconds — the pr
 | 0.2.0 | Current-Tab inspector, auto-management, chronic-strain tracking, AI analysis, collapsible UI. |
 | 0.2.x | Efficiency passes (lighter probe, batched writes, cached reads), QoL (in-context tooltips & per-section explainers, system-vs-Chrome gauge clarity, a measured `JS HEAP` gauge), and an accuracy pass in 0.2.6 (measured-only chronic strain, standard CLS, GC-robust leak detection, throttling-aware background detection, safer duplicate cleanup, health-coloured badge). |
 | 0.3.0 | Script attribution via Long Animation Frames: per-page main-thread cost by source in the Current Tab inspector, culprits named on janky rows and in tab details, and in the AI snapshot. |
-| 0.4.0 | Deep profiler measures a tab's real main-thread load (two readings 3s apart, with a script / layout / style breakdown and Chrome-tagged ad frames), available from Page Performance rows too (this release). |
-| 0.4.x | A cross-tab view of which script sources cost the most main-thread time across all tabs — pending a real-Chrome check of whether hidden tabs report LoAF. |
-| Later | Cross-session persistence for UI state, a chronic-strain automation trigger, extension enable/disable, a custom toolbar icon, optional inner-scroll cap on long AI results. |
+| 0.4.0 | Deep profiler measures a tab's real main-thread load (two readings 3s apart, with a script / layout / style breakdown and Chrome-tagged ad frames), available from Page Performance rows too. |
+| 0.5.0 | Tab CPU: every tab's real load in one 3-second sweep, background tabs included, feeding System Status and AI analysis — replacing the planned cross-tab LoAF view after real-Chrome testing showed hidden tabs report nothing to the page (this release). |
+| Later | A background-CPU automation trigger that works in current Chrome, cross-session persistence for UI state, a chronic-strain automation trigger, extension enable/disable, a custom toolbar icon, optional inner-scroll cap on long AI results. |

@@ -4,6 +4,7 @@
 
 import { runAndRender, renderSummary, advanceSort, esc } from "../shared/summary-view.js";
 import { VERSION, DEEP_PROFILE_SAMPLE_MS } from "../../core/constants.js";
+import { loadWord, fmtPct, busyMix, mostlyUnlabelled } from "../../core/profile.js";
 import {
   sleepTab,
   closeTabs,
@@ -32,29 +33,11 @@ function showDeep(html) {
     `<button class="deep-close" data-act="deep-close" title="Dismiss">✕</button>` + html;
 }
 
-/** A main thread's load in words, so the number reads at a glance. */
-function loadWord(pct) {
-  if (pct >= 50) return "heavy";
-  if (pct >= 25) return "moderate";
-  if (pct >= 5) return "light";
-  return "idle";
-}
-
-const fmtPct = (p) => `${p < 10 ? p.toFixed(1) : Math.round(p)}%`;
-
 function formatDeep(m) {
   const title = `<div class="deep-title">Deep profile — ${esc(m.title)}</div>`;
   let busy = "";
   if (m.mainThreadPct != null) {
-    const mix = [
-      ["script", m.scriptPct],
-      ["layout", m.layoutPct],
-      ["style", m.stylePct],
-      ["other", m.otherPct],
-    ]
-      .filter(([, p]) => p != null && p >= 1)
-      .map(([k, p]) => `${k} ${fmtPct(p)}`)
-      .join(" · ");
+    const mix = busyMix(m);
     busy =
       `<div><b class="${m.mainThreadPct >= 50 ? "hot" : ""}">${fmtPct(m.mainThreadPct)}</b> ` +
       `main-thread busy (${loadWord(m.mainThreadPct)}) over ${m.sampleSeconds}s${mix ? ` — ${mix}` : ""}</div>`;
@@ -67,17 +50,23 @@ function formatDeep(m) {
   if (m.frames != null) facts.push(`${m.frames} frames${m.adFrames ? ` (${m.adFrames} ads)` : ""}`);
   if (m.layouts) facts.push(`${m.layouts} layouts`);
   const factsHtml = facts.length ? `<div class="deep-facts">${facts.join(" · ")}</div>` : "";
+  const asyncNote = mostlyUnlabelled(m)
+    ? " 'other' includes JavaScript run after await / in promise callbacks, which Chrome doesn't count as script."
+    : "";
   const note = busy
-    ? `<div class="deep-note">Measured on the tab's renderer main thread; same-site tabs sharing a process can add to it.</div>`
+    ? `<div class="deep-note">Measured on the tab's renderer main thread; same-site tabs sharing a process can add to it.${asyncNote}</div>`
     : "";
   return `${title}<div class="deep-body">${busy + factsHtml || "no metrics returned"}${note}</div>`;
 }
 
-// One profile at a time — a second click mid-sample would fail to attach anyway.
+// One DevTools measurement at a time (a profile or a Tab CPU sweep) — the worker
+// refuses a second while one holds the debugger anyway.
 let profiling = false;
+// Transient render state for the Tab CPU section, passed through each re-render.
+const ui = { measuring: false };
 
 async function runDeepProfile(tabId) {
-  if (profiling) return;
+  if (profiling || ui.measuring) return;
   profiling = true;
   const secs = DEEP_PROFILE_SAMPLE_MS / 1000;
   showDeep(
@@ -91,6 +80,22 @@ async function runDeepProfile(tabId) {
     showDeep(`Profile failed: ${esc(String(err.message || err))}`);
   } finally {
     profiling = false;
+  }
+}
+
+// Tab CPU sweep: the worker measures every loaded tab at once and saves the result,
+// which the next scan picks up — so this only has to flag "measuring" meanwhile.
+async function runMeasureAll() {
+  if (profiling || ui.measuring) return;
+  ui.measuring = true;
+  rerender();
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: "measure-all" });
+    if (!resp?.ok) showDeep(`Measure failed: ${esc(resp?.error || "unknown error")}`);
+  } catch (err) {
+    showDeep(`Measure failed: ${esc(String(err.message || err))}`);
+  } finally {
+    ui.measuring = false;
   }
 }
 
@@ -118,7 +123,7 @@ async function refresh() {
   busy = true;
   refreshBtn.classList.add("spin");
   try {
-    last = await runAndRender(content, expandedKeys, sortState, collapsedSections);
+    last = await runAndRender(content, expandedKeys, sortState, collapsedSections, ui);
   } catch (err) {
     content.innerHTML = `<p class="loading">// scan error: ${esc(err.message)}</p>`;
   } finally {
@@ -143,7 +148,7 @@ function toggleCollapse(id) {
 // Re-render instantly from the cached scan after a sort/expand/collapse change.
 function rerender() {
   if (last)
-    renderSummary(content, last.summary, last.cpuPercent, expandedKeys, sortState, collapsedSections);
+    renderSummary(content, last.summary, last.cpuPercent, expandedKeys, sortState, collapsedSections, ui);
 }
 
 refreshBtn.addEventListener("click", refresh);
@@ -199,6 +204,9 @@ content.addEventListener("click", async (e) => {
     switch (act) {
       case "profile":
         await runDeepProfile(id);
+        break;
+      case "measure-all":
+        await runMeasureAll();
         break;
       case "sleep":
         await sleepTab(id);

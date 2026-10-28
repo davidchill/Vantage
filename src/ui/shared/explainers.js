@@ -34,7 +34,7 @@ export const CT_TIPS = {
 
 // The hero health verdict.
 export const VERDICT_TIP =
-  "Overall read of browser health, combining system memory pressure, tab count, and any pages straining the browser right now.";
+  "Overall read of browser health, combining system memory pressure, tab count, any pages straining the browser right now, and busy background tabs found by the latest Tab CPU measure.";
 
 // Longer per-section explainers shown in the click-to-open "ⓘ" pop-up.
 // `what` = what the section is; `interpret` = how to read the rows.
@@ -50,12 +50,25 @@ export const SECTION_INFO = {
       "'inline / unknown' is script Chrome couldn't tie to a file. Extension content scripts and cross-origin iframes are invisible to this measurement.",
     ],
   },
+  cpu: {
+    title: "Tab CPU",
+    what: "Real main-thread load for every loaded tab, measured when you press measure: Vantage reads each tab's busy time twice, 3 seconds apart, through Chrome's DevTools protocol — all tabs side by side, so it takes 3 seconds however many are open. Unlike the always-on monitoring, it sees background tabs.",
+    interpret: [
+      "The % is how much of those 3 seconds the tab's main thread was busy: under 5% is idle, 25%+ moderate, 50%+ heavy.",
+      "🌙 marks a background tab. Chrome throttles hidden tabs' timers to about 1% CPU after a few seconds, so one well above that is being kept awake — by media, live network updates, or workers.",
+      "Expand a row for what the time went to. 'other' is busy time Chrome doesn't label — parsing, garbage collection, and JavaScript running after 'await' or in promise callbacks, which Chrome's script counter misses. On modern, async-heavy sites it's often mostly script.",
+      "Chrome shows a 'started debugging this browser' banner while it measures; it goes away when the 3 seconds are up.",
+      "It's a snapshot: measure again to refresh. After 10 minutes it's marked stale and stops counting toward System Status.",
+      "Tabs from the same site can share a renderer process and show its combined load. Work inside cross-origin iframes (most ads) and web workers runs elsewhere and isn't counted.",
+      "⌖ profiles one tab with the same reading; ⏾ sleeps it.",
+    ],
+  },
   perf: {
     title: "Page Performance",
     what: "Pages affecting performance right now, plus ones predicted to based on how they've behaved on past visits.",
     interpret: [
       "⚠ blocking — milliseconds a page froze the main thread in the last 5s; over ~400ms feels janky.",
-      "🌙 background CPU — a hidden tab still burning CPU where you can't see it.",
+      "🌙 background CPU — a hidden tab reported burning CPU. Current Chrome no longer tells pages about work done while hidden, so these rarely appear; Tab CPU › measure is the reliable check for background tabs.",
       "📈 memory growth — the tab's memory has kept climbing for 10+ minutes without dropping back, a possible leak.",
       "A site name after the ⚠ or bg-cpu time is the script source that ran the most in that window (via Long Animation Frames). Expand the row for the top three.",
       "⌖ on a row measures that tab's real main-thread load over 3 seconds — the ground truth behind these estimates.",
