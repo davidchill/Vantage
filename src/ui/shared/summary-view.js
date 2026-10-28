@@ -6,6 +6,7 @@
 import { collectSnapshot, sampleCpuPercent } from "../../core/collector.js";
 import { analyze } from "../../core/analyzer.js";
 import { READOUT_TIPS, GAUGE_TIPS, VERDICT_TIP } from "./explainers.js";
+import { describeSource } from "../../core/script-cost.js";
 
 /** Escape untrusted text (tab titles/URLs are page-controlled). */
 function esc(str) {
@@ -190,6 +191,12 @@ export function advanceSort(sortState, sectionId) {
   sortState.set(sectionId, opts[(idx + 1) % opts.length].key);
 }
 
+/** A perf row's culprit script source, ellipsized for the meta (full name on hover). */
+function culpritChip(c) {
+  const tip = `${describeSource(c)} ran the most script in the latest window`;
+  return `<span class="ln-culprit" title="${esc(tip)}">${esc(c.label)}</span>`;
+}
+
 /** Sleep + close controls for a tab (Sleep hidden if it's already asleep). */
 function tabActions(t) {
   const sleep = t.discarded
@@ -299,7 +306,15 @@ export function renderSummary(
   if (perf) {
     for (const b of (perf.background || []).slice(0, 5)) {
       perfRows.push(
-        lineRow(`pb:${b.id}`, expanded, "warn", `🌙 ${esc(b.title)}`, `bg-cpu ${b.blockingHiddenMs}ms`, tabActions(b), b)
+        lineRow(
+          `pb:${b.id}`,
+          expanded,
+          "warn",
+          `🌙 ${esc(b.title)}`,
+          `bg-cpu ${b.blockingHiddenMs}ms${b.culprit ? ` · ${culpritChip(b.culprit)}` : ""}`,
+          tabActions(b),
+          b
+        )
       );
     }
     for (const a of perf.live.slice(0, 5)) {
@@ -309,7 +324,10 @@ export function renderSummary(
           expanded,
           "warn",
           esc(a.title),
-          `⚠ ${a.blockingMs}ms${a.jsHeapMB != null ? ` · ${a.jsHeapMB}M` : ""}`,
+          // The culprit, when one stands out, says more than the heap (still in detail).
+          `⚠ ${a.blockingMs}ms${
+            a.culprit ? ` · ${culpritChip(a.culprit)}` : a.jsHeapMB != null ? ` · ${a.jsHeapMB}M` : ""
+          }`,
           tabActions(a),
           a
         )

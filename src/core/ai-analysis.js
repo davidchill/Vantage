@@ -16,6 +16,10 @@ import {
   AI_DEFAULT_MODEL,
 } from "./constants.js";
 import { getSettings } from "./settings.js";
+import { describeSource } from "./script-cost.js";
+
+// "doubleclick.net (Ads)" for a script source, or undefined (omitted from the JSON).
+const sourceOrNothing = (s) => (s ? describeSource(s) : undefined);
 
 // The shape we force the model to return — a headline plus a ranked list of
 // suggestions. Structured outputs guarantee valid JSON, so the panel can render
@@ -59,6 +63,8 @@ const SYSTEM_PROMPT = [
   "Analyze it and return a brief headline plus 3-6 prioritized, concrete suggestions.",
   "Be specific: name the actual tab title, site origin, or extension when you can, and",
   "say what to do (sleep it, close duplicates, disable an extension, reload a leaking tab).",
+  "When a tab has a culprit or topScript (the script source that ran the most, measured via",
+  "Long Animation Frames — often an ad or analytics domain), name it as the likely cause.",
   "Rank by real impact — measured jank, background CPU, and memory growth matter most;",
   "idle/duplicate cleanup is lower. If the browser looks healthy, say so plainly and keep",
   "suggestions light. Do not invent data that isn't in the snapshot. Be concise and",
@@ -87,11 +93,17 @@ function buildSnapshot(summary, cpuPercent) {
       blockingMs: t.blockingMs,
       jsHeapMB: t.jsHeapMB,
       idleMinutes: t.idleMinutes,
+      topScript: sourceOrNothing(t.topScript),
     })),
-    jankingNow: pick(perf.live, (a) => ({ title: a.title, blockingMs: a.blockingMs })),
+    jankingNow: pick(perf.live, (a) => ({
+      title: a.title,
+      blockingMs: a.blockingMs,
+      culprit: sourceOrNothing(a.culprit),
+    })),
     backgroundDrain: pick(perf.background, (b) => ({
       title: b.title,
       blockingHiddenMs: b.blockingHiddenMs,
+      culprit: sourceOrNothing(b.culprit),
     })),
     leaks: pick(perf.leaks, (l) => ({
       title: l.title,

@@ -547,6 +547,16 @@ main::-webkit-scrollbar-thumb:hover {
   font-size: 10.5px;
   font-variant-numeric: tabular-nums;
 }
+/* Culprit script source named in a perf row's meta (ellipsized; full name on hover) */
+.ln-culprit {
+  display: inline-block;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  color: var(--text);
+}
 .empty {
   color: var(--good);
   font-size: 11px;
@@ -1012,6 +1022,16 @@ main::-webkit-scrollbar-thumb:hover {
   font-size: 17px;
 }
 
+/* Main-thread script time summary (LoAF attribution) under the readouts */
+.ct-js {
+  margin-top: 7px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.ct-js .hot {
+  color: var(--warn);
+}
+
 /* Expanded detail: domain / cookie lists */
 .ct-detail {
   margin-top: 10px;
@@ -1083,6 +1103,17 @@ main::-webkit-scrollbar-thumb:hover {
   color: var(--text-2);
 }
 .ct-tag.third {
+  color: var(--muted);
+}
+.ct-tag.self {
+  color: var(--good);
+  border-color: rgba(68, 196, 122, 0.4);
+}
+.ct-tag.extension {
+  color: var(--accent);
+  border-color: rgba(91, 157, 255, 0.4);
+}
+.ct-tag.unknown {
   color: var(--muted);
 }
 

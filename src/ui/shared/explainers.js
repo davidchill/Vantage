@@ -29,6 +29,7 @@ export const CT_TIPS = {
   trackers: "Known analytics / tracking resources this page loaded.",
   "3rd-party": "Distinct outside domains this page pulled resources from.",
   cookies: "First-party cookies this site has stored in your browser.",
+  js: "Time this page has spent running scripts inside slow frames (over 50 ms), split by where each script came from. Chrome credits the script that started the work, skips scripts under 5 ms, and never shows extension content scripts or cross-origin iframes — so their cost isn't counted here.",
 };
 
 // The hero health verdict.
@@ -40,11 +41,13 @@ export const VERDICT_TIP =
 export const SECTION_INFO = {
   ct: {
     title: "Current Tab",
-    what: "What the page you're actively looking at is loading and storing — ads, trackers, outside domains, and cookies. Click the tiles to expand the full breakdown.",
+    what: "What the page you're actively looking at is loading, storing, and running — ads, trackers, outside domains, cookies, and which scripts are costing main-thread time. Click the tiles to expand the full breakdown.",
     interpret: [
       "ads / trackers — resources matched against known ad and analytics networks.",
       "3rd-party — distinct outside domains the page reached out to.",
       "cookies — first-party cookies this site has stored; 'clear cookies' wipes them.",
+      "main-thread JS — script time in slow frames, by source. A large 3rd-party share means outside code (often ads or analytics) is what's making this page sluggish.",
+      "'inline / unknown' is script Chrome couldn't tie to a file. Extension content scripts and cross-origin iframes are invisible to this measurement.",
     ],
   },
   perf: {
@@ -54,6 +57,7 @@ export const SECTION_INFO = {
       "⚠ blocking — milliseconds a page froze the main thread in the last 5s; over ~400ms feels janky.",
       "🌙 background CPU — a hidden tab still burning CPU where you can't see it.",
       "📈 memory growth — the tab's memory has kept climbing for 10+ minutes without dropping back, a possible leak.",
+      "A site name after the ⚠ or bg-cpu time is the script source that ran the most in that window (via Long Animation Frames). Expand the row for the top three.",
       "Plain rows with no icon are predictions from this site's history, not live measurements.",
     ],
   },

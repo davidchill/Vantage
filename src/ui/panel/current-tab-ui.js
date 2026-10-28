@@ -10,6 +10,8 @@ import { esc, readout } from "../shared/summary-view.js";
 import { CT_TIPS } from "../shared/explainers.js";
 import { PERF_LIVE_KEY } from "../../core/constants.js";
 import { analyzeTrackers, CATEGORY_LABELS } from "../../core/trackers.js";
+import { analyzeScriptCost, sourceTag, fmtMs } from "../../core/script-cost.js";
+import { collectExtensions } from "../../core/collector.js";
 import {
   summarizeSiteCookies,
   trackerCookieSummary,
@@ -59,15 +61,50 @@ async function activeTab() {
   return tab || null;
 }
 
-/** Read the probe's latest hostnames for a tab from session storage. */
-async function resourceHostsFor(tabId) {
+/** Read the probe's latest report for a tab from session storage (null until it reports). */
+async function liveReportFor(tabId) {
   const wrap = await chrome.storage.session.get(PERF_LIVE_KEY);
-  const live = (wrap[PERF_LIVE_KEY] || {})[tabId];
-  return live?.resourceHosts || null;
+  return (wrap[PERF_LIVE_KEY] || {})[tabId] || null;
 }
 
-function detailSection(trackers, trackerCookies, cookies) {
+/** Names for any extensions whose page-injected scripts show up in the attribution. */
+async function extensionNamesFor(scripts) {
+  if (!scripts.some(([source]) => source.startsWith("ext:"))) return {};
+  const exts = await collectExtensions();
+  return Object.fromEntries(exts.map((e) => [e.id, e.name]));
+}
+
+/** One-line summary of main-thread script time, shown under the readouts. */
+function scriptLine(live, cost) {
+  const tip = ` data-tip="${esc(CT_TIPS.js)}" tabindex="0"`;
+  if (live?.loaf === false) {
+    return `<div class="ct-js"${tip}>main-thread JS · needs Chrome 123+</div>`;
+  }
+  if (!cost.totalMs) {
+    return `<div class="ct-js"${tip}>main-thread JS · no slow frames yet</div>`;
+  }
+  const share = Math.round((cost.thirdPartyMs / cost.totalMs) * 100);
+  const third = cost.thirdPartyMs
+    ? ` · <span class="${share >= 50 ? "hot" : ""}">3rd-party ${fmtMs(cost.thirdPartyMs)} (${share}%)</span>`
+    : "";
+  return `<div class="ct-js"${tip}>main-thread JS ${fmtMs(cost.totalMs)}${third}</div>`;
+}
+
+function detailSection(scriptCost, trackers, trackerCookies, cookies) {
   const parts = [];
+
+  if (scriptCost.sources.length) {
+    const items = scriptCost.sources
+      .slice(0, 10)
+      .map((s) => {
+        const tagClass = s.kind === "tracker" ? s.category : s.kind;
+        const tag = `<span class="ct-tag ${tagClass}">${esc(sourceTag(s))}</span>`;
+        const layout = s.layoutMs >= 50 ? ` · ${fmtMs(s.layoutMs)} layout` : "";
+        return `<li><span class="ct-dom">${esc(s.label)}</span>${tag}<span class="ct-n">${fmtMs(s.ms)}${layout}</span></li>`;
+      })
+      .join("");
+    parts.push(`<div class="ct-sub">Main-thread time by source</div><ul class="ct-list">${items}</ul>`);
+  }
 
   if (trackers.thirdParties.length) {
     const items = trackers.thirdParties
@@ -138,8 +175,11 @@ async function render() {
       lastUrl = tab.url;
     }
 
-    const hosts = await resourceHostsFor(tab.id);
+    const live = await liveReportFor(tab.id);
+    const hosts = live?.resourceHosts || null;
     const trackers = analyzeTrackers(hosts || [], tab.url);
+    const scripts = live?.scripts || [];
+    const scriptCost = analyzeScriptCost(scripts, tab.url, await extensionNamesFor(scripts));
     const cookies = await cookiesFor(tab.url);
     const trackerCookies = await trackerCookiesFor(
       trackers.trackerDomains.map((d) => d.domain)
@@ -163,8 +203,9 @@ async function render() {
             : ""
         }</div>`;
 
-    const detail = expanded ? detailSection(trackers, trackerCookies, cookies) : "";
-    shell(note + cluster + detail, { showClear: !!(cookies && cookies.count) });
+    const jsLine = gathering ? "" : scriptLine(live, scriptCost);
+    const detail = expanded ? detailSection(scriptCost, trackers, trackerCookies, cookies) : "";
+    shell(note + cluster + jsLine + detail, { showClear: !!(cookies && cookies.count) });
   } catch (err) {
     shell(`<div class="ct-empty">// inspector error: ${esc(String(err.message || err))}</div>`);
   } finally {

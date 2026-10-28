@@ -120,6 +120,64 @@
     }
   });
 
+  // Script attribution (Long Animation Frames, Chrome 123+). Each long frame lists
+  // the scripts that ran in it (those over 5ms) with their source URL; we total
+  // each source's run time and forced style/layout time over the page's life.
+  // Sources are hostnames for web scripts, "ext:<id>" for an extension script
+  // injected into the page itself, and "" when Chrome gives no URL (inline handlers,
+  // eval). Extension content scripts (isolated worlds, this probe included) and
+  // cross-origin iframes are never attributed by Chrome, so they can't appear here.
+  const loafSupported = !!PerformanceObserver.supportedEntryTypes?.includes("long-animation-frame");
+  const SCRIPT_SOURCES_MAX = 100; // bound memory on script-heavy pages
+  const SCRIPT_REPORT_MAX = 15; // heaviest sources sent per report
+  const SCRIPT_WINDOW_MAX = 5; // heaviest sources of the latest window sent per report
+  const scriptCost = new Map(); // source -> [runMs, forcedLayoutMs], page life
+  // The same, for the current reporting window only (reset each report), so a janky
+  // window can be blamed on what ran in it rather than on what ran at page load.
+  let windowScriptCost = new Map();
+
+  function scriptSource(url) {
+    if (!url) return "";
+    try {
+      const u = new URL(url);
+      return u.protocol === "chrome-extension:" ? `ext:${u.hostname}` : u.hostname;
+    } catch {
+      return "";
+    }
+  }
+
+  // Only where supported: observing an unknown entry type logs a console warning in
+  // every page on older Chrome, which an extension shouldn't add to sites.
+  if (loafSupported) watch("long-animation-frame", (entries) => {
+    for (const frame of entries) {
+      for (const s of frame.scripts || []) {
+        const source = scriptSource(s.sourceURL);
+        const layoutMs = s.forcedStyleAndLayoutDuration || 0;
+        addScriptCost(scriptCost, source, s.duration, layoutMs);
+        addScriptCost(windowScriptCost, source, s.duration, layoutMs);
+      }
+    }
+  });
+
+  function addScriptCost(costs, source, ms, layoutMs) {
+    let cost = costs.get(source);
+    if (!cost) {
+      if (costs.size >= SCRIPT_SOURCES_MAX) return;
+      cost = [0, 0];
+      costs.set(source, cost);
+    }
+    cost[0] += ms;
+    cost[1] += layoutMs;
+  }
+
+  /** The heaviest sources in `costs`, as compact [source, runMs, layoutMs] rows. */
+  function topScripts(costs, max) {
+    return [...costs]
+      .sort((a, b) => b[1][0] - a[1][0])
+      .slice(0, max)
+      .map(([source, [ms, layoutMs]]) => [source, Math.round(ms), Math.round(layoutMs)]);
+  }
+
   // DOM node count is a full-tree walk — comparatively expensive — so sample it on a
   // slower cadence (every DOM_SAMPLE_EVERY reports) and never while hidden, where it
   // can't visibly change. Between samples we report the last value.
@@ -169,6 +227,9 @@
       resourceCount,
       transferMB: +(transferBytes / 1048576).toFixed(1),
       resourceHosts: [...resourceHosts],
+      scripts: topScripts(scriptCost, SCRIPT_REPORT_MAX),
+      scriptsWindow: topScripts(windowScriptCost, SCRIPT_WINDOW_MAX),
+      loaf: loafSupported,
       lcpMs,
       cls: +cls.toFixed(3),
       inpMs: inpMs || null,
@@ -190,6 +251,7 @@
     blockingMs = 0;
     blockingHiddenMs = 0;
     windowStart = performance.now();
+    windowScriptCost = new Map();
   }
 
   // Capture late activity right before the page is backgrounded/unloaded.

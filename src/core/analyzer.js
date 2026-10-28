@@ -20,8 +20,10 @@ import {
   CLS_POOR,
   CHRONIC_MIN_EPISODES,
   CHRONIC_RECENT_DAYS,
+  CULPRIT_MIN_MS,
 } from "./constants.js";
 import { computeHealth } from "./health.js";
+import { analyzeScriptCost, topCulprit, describeSource, fmtMs } from "./script-cost.js";
 
 /**
  * Collapse trivial URL differences so true duplicates group together. Only the
@@ -147,8 +149,11 @@ function tabFlags(t) {
   return f.join(", ");
 }
 
-/** Key/value detail rows for a tab (plus its live page metrics, if any). */
-function tabStats(t, live, now) {
+/**
+ * Key/value detail rows for a tab (plus its live page metrics, if any). `extNames`
+ * (extension id -> name) labels any extension script in the attribution.
+ */
+function tabStats(t, live, now, extNames) {
   const s = [
     ["window", t.windowId],
     ["state", tabFlags(t)],
@@ -167,6 +172,9 @@ function tabStats(t, live, now) {
     if (live.inpMs != null) s.push(["inp", `${live.inpMs}ms`]);
     if (live.cls != null) s.push(["cls", live.cls]);
     if (live.loadMs != null) s.push(["load", `${live.loadMs}ms`]);
+    // The script source that has cost this page the most main-thread time so far.
+    const top = topCulprit(live.scripts || [], t.url, extNames, CULPRIT_MIN_MS);
+    if (top) s.push(["top script", `${describeSource(top)} · ${fmtMs(top.ms)}`]);
     const series = live.heapSeries;
     if (series && series.length >= 2) {
       const a = series[0];
@@ -207,6 +215,19 @@ export function analyze(snapshot) {
     const maxAge = l.hidden ? PERF_HIDDEN_STALE_MS : PERF_STALE_MS;
     return now - l.ts < maxAge ? l : null;
   };
+
+  // Extension id -> name, so an extension script injected into a page is named.
+  const extNames = Object.fromEntries((snapshot.extensions || []).map((e) => [e.id, e.name]));
+
+  // What ran in a tab's latest reporting window (Long Animation Frames): the source
+  // that stands out, if one does — the likely cause of that window's jank — and
+  // the few heaviest, for the row's detail.
+  const windowBlame = (l, url) => ({
+    culprit: topCulprit(l.scriptsWindow || [], url, extNames, CULPRIT_MIN_MS),
+    bullets: analyzeScriptCost(l.scriptsWindow || [], url, extNames)
+      .sources.slice(0, 3)
+      .map((s) => `${describeSource(s)} — ${fmtMs(s.ms)} of script this window`),
+  });
 
   // Each tab's URL is read several times below (host for grouping, exact origin to
   // match the perf/strain stores). Parse each distinct url string once and memoize.
@@ -268,7 +289,7 @@ export function analyze(snapshot) {
         windowId: t.windowId,
         idleMinutes: Math.round((now - last) / 60000),
         discarded: !!t.discarded,
-        stats: tabStats(t, liveFor(t.id), now),
+        stats: tabStats(t, liveFor(t.id), now, extNames),
       });
     }
   }
@@ -318,9 +339,10 @@ export function analyze(snapshot) {
         blockingMs: live ? live.blockingMs : 0,
         jsHeapMB: live ? live.jsHeapMB : null,
         domNodes: live ? live.domNodes : null,
+        topScript: live ? topCulprit(live.scripts || [], t.url, extNames, CULPRIT_MIN_MS) : null,
         score,
         reason,
-        stats: tabStats(t, live, now),
+        stats: tabStats(t, live, now, extNames),
       };
     })
     .sort((a, b) => b.score - a.score);
@@ -360,7 +382,8 @@ export function analyze(snapshot) {
         blockingMs: l.blockingMs,
         jsHeapMB: l.jsHeapMB,
         discarded: !!t.discarded,
-        stats: tabStats(t, l, now),
+        stats: tabStats(t, l, now, extNames),
+        ...windowBlame(l, t.url),
       });
     }
 
@@ -372,7 +395,8 @@ export function analyze(snapshot) {
         blockingHiddenMs: l.blockingHiddenMs,
         jsHeapMB: l.jsHeapMB,
         discarded: !!t.discarded,
-        stats: tabStats(t, l, now),
+        stats: tabStats(t, l, now, extNames),
+        ...windowBlame(l, t.url),
       });
     }
 
@@ -396,7 +420,7 @@ export function analyze(snapshot) {
           spanMin: Math.round(spanMin),
           currentMB: last.h,
           discarded: !!t.discarded,
-          stats: tabStats(t, l, now),
+          stats: tabStats(t, l, now, extNames),
         });
       }
     }

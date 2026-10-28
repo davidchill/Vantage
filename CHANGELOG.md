@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.3.0 — 2026-10-28
+
+New feature: **script attribution**. Until now Vantage could say a page was janky but not *what* on it was responsible. Using Chrome's Long Animation Frames API (LoAF, Chrome 123+), the probe now records which script sources run in slow frames, so Vantage can name the domain — often an ad or analytics network — behind a page's main-thread cost and behind a specific janky moment.
+
+The original plan was to use LoAF to measure each **extension's** cost. That isn't possible: Chrome's documentation states that "extension code running in an isolated world won't have script attribution in long animation frames", and most extension content scripts run in an isolated world. The feature is built around third-party script attribution instead; an extension shows up only if it injects a script into the page's own world. Extension impact in the Extensions section is still inferred from permission breadth.
+
+Verified with scratch Node harnesses against a stubbed `chrome` API (27 new checks, 93 in all, earlier suites unchanged). **Not yet verified in real Chrome:** a check in the desktop app's embedded browser saw Long Tasks fire but no LoAF entries while its pane was hidden, which suggests LoAF may only report for tabs that are on screen. That is unconfirmed, and whether the extension's isolated-world probe receives LoAF entries also needs a real-Chrome test.
+
+### Probe (`perf-probe.js`)
+- **LoAF observer**, only where supported (`PerformanceObserver.supportedEntryTypes`): observing an unknown entry type logs a console warning in every page on Chrome 121–122, which an extension shouldn't add to sites. Each report now carries `loaf: true|false`.
+- **Per-source script cost.** For every long frame, each script entry (Chrome itemizes those over 5 ms) adds its `duration` and `forcedStyleAndLayoutDuration` to its source: the hostname of `sourceURL`, `ext:<id>` for a `chrome-extension://` script, or `""` when Chrome gives no URL (inline handlers, eval). Totals are kept over the page's life (`scripts`, top 15 sent) and for the current reporting window (`scriptsWindow`, top 5, reset with each report), so a janky window is blamed on what ran in it rather than on what ran at page load. At most 100 distinct sources are tracked per page.
+
+### Attribution core (`src/core/script-cost.js`, new)
+- `analyzeScriptCost(scripts, pageUrl, extNames)` groups sources by registrable domain and labels each **this site**, a known tracker (**Ads / Analytics / Social / Trackers**, via the existing `trackers.js` database), **3rd-party**, **extension** (by name), or **inline / unknown**; returns heaviest-first sources plus total, this-site, and third-party milliseconds.
+- `topCulprit(...)` names a source only when it clearly stands out: at least `CULPRIT_MIN_MS` (50 ms) and not inline/unknown code — naming a smaller second source then would mislead.
+- Shared helpers `sourceTag`, `describeSource` ("doubleclick.net (Ads)"), and `fmtMs` are used by the analyzer, the panel, and the AI snapshot alike; the Current Tab card's private copies were removed.
+
+### Current Tab inspector
+- **Main-thread JS line** under the readouts — e.g. "main-thread JS 1.8s · 3rd-party 1.4s (79%)", amber when third parties account for half or more. Says "no slow frames yet" or "needs Chrome 123+" when there's nothing to show. A fifth readout tile was considered but would overflow the side panel's existing labels.
+- **"Main-thread time by source"** list at the top of the expanded detail: up to 10 sources with tags, run time, and forced layout time when it's 50 ms or more.
+
+### Page Performance & tab details
+- **Culprits on janky and background rows**: `⚠ 900ms · doubleclick.net` / `bg-cpu 400ms · <source>`, from the latest window. The name is ellipsized at a fixed width with the full description on hover, and replaces the heap figure in the row meta when present (the heap stays in the detail). Expanding a row lists the window's top three sources.
+- **"top script"** in every tab's detail block — the page-life leader, e.g. `site1.test (this site) · 4.0s` — which also explains *why* a heavy tab ranks high.
+- `analyze()` builds an extension id → name map from the snapshot so injected extension scripts are named; heavy-tab rows gain `topScript`, perf rows gain `culprit` and `bullets`.
+
+### AI Analysis
+- The snapshot now includes `culprit` on janking and background-drain tabs and `topScript` on heavy tabs (omitted when nothing stands out), and the system prompt asks Claude to name them as the likely cause.
+
+### Help text
+- Current Tab tooltip and ⓘ explain the new line and list, and state the limits plainly: Chrome credits the script that *started* the work, skips scripts under 5 ms, and never shows extension content scripts or cross-origin iframes. The Page Performance ⓘ explains the culprit name on rows.
+
 ## v0.2.6 — 2026-10-28
 
 An accuracy pass, driven by a full diagnostics review of the extension. The aim: what Vantage reports as slowing Chrome down should be **measured, current, and attributable** — not inflated by its own bookkeeping, distorted by Chrome's background throttling, or blind to tabs it never instrumented. Fixes 14 issues across the health verdict, memory signals, background-tab detection, tab-closing safety, and the worker's plumbing. Every fix was checked with scratch Node harnesses that load the real modules against a stubbed `chrome` API (66 checks), and each harness was also run against v0.2.5 to confirm it catches the old behavior.
