@@ -18,7 +18,10 @@ export const DEFAULT_SETTINGS = {
   enabled: false, // master switch — automation does nothing until this is true
   sustainMinutes: DEFAULT_SUSTAIN_MINUTES,
   triggers: {
-    // Hidden tabs burning CPU. Clearest waste, safest to act on.
+    // Hidden tabs burning CPU. Clearest waste, safest to act on — but fed by Long
+    // Tasks the probe sees while a tab is hidden, which current Chrome no longer
+    // reports (verified on 156). Kept for browsers that still do; the settings UI
+    // says so.
     backgroundDrain: { enabled: true, action: "sleep" },
     // Tabs whose JS heap keeps climbing. Sleeping reclaims the memory.
     leak: { enabled: true, action: "sleep" },

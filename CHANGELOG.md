@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.5.1 — 2026-10-28
+
+Fix: **auto-management's background CPU trigger is now honest about current Chrome.** v0.5.0's real-Chrome testing showed that a hidden page gets no Long Task entries, and the trigger is fed only by those (`performance.background`, the probe's background-drain list). So with auto-management on, the panel said "Sleeping bg-drain & leaks after 5m" while, in current Chrome, the background half could never act — silent non-protection, with the trigger on by default once auto-management is enabled.
+
+No signal that could feed it continuously exists without cost: in-page APIs see nothing in hidden tabs, Chrome's timer budget only constrains tabs it's already throttling, and a lag probe inside every page would itself burn CPU in every tab. The only real per-tab source is the DevTools reading behind Tab CPU, which shows Chrome's debugging banner — so making the trigger *work* is left for a later, opt-in feature, and this release makes it *honest*. Automation behavior and saved settings are unchanged, so browsers that still report hidden-tab Long Tasks keep the working trigger.
+
+Checked in real Chrome 156 (headless, throwaway profile, the unpacked extension loaded over the DevTools pipe): the strip's hover text appears only while auto-manage is on, exactly one caveat renders, directly under the background trigger, and the stored trigger setting is untouched. All 138 harness checks still pass.
+
+### Settings & status strip (`automation-ui.js`, `summary.css`)
+- **A caveat under "Background CPU drain"** in the settings modal (`TRIGGER_NOTES`): current Chrome doesn't tell pages about work done while they're hidden (tested on 156), so the trigger rarely fires there, though it still works in browsers that report it — with a pointer to Tab CPU › measure for finding busy background tabs. Indented to line up with the trigger's label (`.set-note.trig-note`).
+- **Status-strip hover**: while auto-manage is on with the background trigger enabled, hovering the "Sleeping bg-drain & leaks…" summary gives the same caveat.
+
+### Code comments
+- `settings.js` (the trigger's default) and `automation.js` (the module header) now say what feeds the background trigger and that current Chrome leaves it empty.
+
 ## v0.5.0 — 2026-10-28
 
 New capability: **Tab CPU — every tab's real load, background tabs included.** This is the first release tested in real Chrome with the extension loaded: Chrome 156, headless, a throwaway profile separate from the user's browser, the unpacked extension loaded over the DevTools pipe (`Extensions.loadUnpacked`). That answered the questions v0.3.0 left open and exposed a blind spot:

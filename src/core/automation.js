@@ -1,7 +1,9 @@
 // automation.js — rule-based auto-management of strained tabs.
 //
 // Detection is already done by the analyzer: performance.background lists hidden
-// tabs burning CPU, performance.leaks lists tabs whose heap keeps climbing. This
+// tabs burning CPU (when the browser reports hidden-tab Long Tasks to the page —
+// current Chrome doesn't, so in practice it's empty there), performance.leaks lists
+// tabs whose heap keeps climbing. This
 // module adds the missing dimension — TIME. A tab is only acted on once it has
 // been continuously strained for `sustainMinutes`, so a momentary spike never
 // costs you a tab.

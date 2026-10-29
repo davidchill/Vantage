@@ -882,6 +882,10 @@ main::-webkit-scrollbar-thumb:hover {
   line-height: 1.5;
   color: var(--muted);
 }
+/* A caveat tucked under its trigger, indented to line up with the label. */
+.set-note.trig-note {
+  margin: -3px 0 8px 22px;
+}
 .set-num input {
   width: 48px;
 }

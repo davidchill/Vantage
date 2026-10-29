@@ -14,6 +14,16 @@ import { refreshAICard } from "./ai-ui.js";
 const SHORT = { backgroundDrain: "bg-drain", leak: "leaks" };
 const ACTION_VERB = { sleep: "Sleeping", close: "Closing" };
 
+// Caveats shown under a trigger in settings, where its signal isn't always there.
+// The background trigger is fed by Long Tasks the probe sees in hidden tabs, and
+// current Chrome doesn't report those to the page at all (verified on Chrome 156).
+const TRIGGER_NOTES = {
+  backgroundDrain:
+    "Current Chrome doesn't tell pages about work done while they're hidden (tested on Chrome 156), so this rarely fires there; it still works in browsers that report it. To find busy background tabs, use Tab CPU › measure.",
+};
+const STRIP_BG_TIP =
+  "bg-drain rarely fires in current Chrome, which doesn't report hidden-tab work — Tab CPU › measure finds busy background tabs.";
+
 const strip = document.getElementById("auto-strip");
 const modal = document.getElementById("settings-modal");
 const modalBody = document.getElementById("modal-body");
@@ -38,12 +48,14 @@ function stripSummary(s) {
 function renderStrip() {
   if (!current) return;
   const on = current.enabled;
+  // The summary names bg-drain as managed; say on hover that it's rarely fed.
+  const tip = on && current.triggers.backgroundDrain?.enabled ? ` title="${esc(STRIP_BG_TIP)}"` : "";
   strip.hidden = false;
   strip.classList.toggle("on", on);
   strip.innerHTML = `
     <span class="sw" data-act="toggle" role="switch" aria-checked="${on}"><span class="sw-dot"></span></span>
     <span class="auto-label">AUTO-MANAGE</span>
-    <span class="auto-sum">${on ? esc(stripSummary(current)) : "off"}</span>`;
+    <span class="auto-sum"${tip}>${on ? esc(stripSummary(current)) : "off"}</span>`;
 }
 
 // ── Settings modal ─────────────────────────────────────────────────────────
@@ -61,7 +73,7 @@ function triggerRow(key) {
       <select class="set-select" data-trigger="${key}" data-attr="action"${t.enabled ? "" : " disabled"}>
         ${opt("sleep")}${opt("close")}
       </select>
-    </div>`;
+    </div>${TRIGGER_NOTES[key] ? `<p class="set-note trig-note">${esc(TRIGGER_NOTES[key])}</p>` : ""}`;
 }
 
 function logRows(log) {
